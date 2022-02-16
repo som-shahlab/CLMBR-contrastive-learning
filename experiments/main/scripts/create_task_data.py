@@ -118,14 +118,15 @@ parser.add_argument(
     help='Underlying encoder architecture for CLMBR. [gru|transformer|lstm]'
 )
 
-
 if __name__ == '__main__':
     
     args = parser.parse_args()
     
+	np.random.seed(args.seed)
+	
     tasks = ['hospital_mortality', 'LOS_7', 'icu_admission', 'readmission_30']
     
-    clmbr_model_path = f"{args.model_path}/{args.clmbr_type}/{args.encoder}_{args.size}_{args.dropout}_{args.lr}"
+    clmbr_model_path = f"{args.model_path}/{args.clmbr_type}/models/{args.encoder}_sz_{args.size}_do_{args.dropout}_lr_{args.lr}_l2_{args.l2}"
     
     if args.cohort_dtype == 'parquet':
         dataset = pd.read_parquet(os.path.join(args.cohort_fpath, "cohort_split.parquet"))
@@ -145,7 +146,7 @@ if __name__ == '__main__':
     labels = {}
     features = {}
     
-    clmbr_model = ehr_ml.clmbr.CLMBR.from_pretrained(f'{clmbr_model_path}/{args.clmbr_type}/model')
+    clmbr_model = ehr_ml.clmbr.CLMBR.from_pretrained(f'{clmbr_model_path}')
     for task in tasks:
         
         ehr_ml_patient_ids[task] = {}
@@ -189,22 +190,24 @@ if __name__ == '__main__':
             
             print('Saving artifacts...')
             
-            if not os.path.exists(f'{args.labelled_fpath}/{args.clmbr_type}/{args.encoder}_{args.size}_{args.dropout}/{task}'):
-                os.makedirs(f'{args.labelled_fpath}/{args.clmbr_type}/{args.encoder}_{args.size}_{args.dropout}/{task}')
+			task_path = f"{args.labelled_fpath}/{args.clmbr_type}/{args.encoder}_sz_{args.size}_do_{args.dropout}_lr_{args.lr}_l2_{args.l2}/{task}"
+			
+            if not os.path.exists(f'task_path'):
+                os.makedirs(f'task_path')
             df_ehr_pat_ids = pd.DataFrame(ehr_ml_patient_ids[task][fold])
-            df_ehr_pat_ids.to_csv(f'{args.labelled_fpath}/{args.clmbr_type}/{args.encoder}_{args.size}_{args.dropout}/{task}/ehr_ml_patient_ids_{fold}.csv', index=False)
+            df_ehr_pat_ids.to_csv(f'task_path/ehr_ml_patient_ids_{fold}.csv', index=False)
             
             df_prediction_ids = pd.DataFrame(prediction_ids[task][fold])
-            df_prediction_ids.to_csv(f'{args.labelled_fpath}/{args.clmbr_type}/{args.encoder}_{args.size}_{args.dropout}/{task}/prediction_ids_{fold}.csv', index=False)
+            df_prediction_ids.to_csv(f'task_path/prediction_ids_{fold}.csv', index=False)
             
             df_day_inds = pd.DataFrame(day_indices[task][fold])
-            df_day_inds.to_csv(f'{args.labelled_fpath}/{args.clmbr_type}/{args.encoder}_{args.size}_{args.dropout}/{task}/day_indices_{fold}.csv', index=False)
+            df_day_inds.to_csv(f'task_path/day_indices_{fold}.csv', index=False)
             
             df_labels = pd.DataFrame(labels[task][fold])
-            df_labels.to_csv(f'{args.labelled_fpath}/{args.clmbr_type}/{args.encoder}_{args.size}_{args.dropout}/{task}/labels_{fold}.csv', index=False)
+            df_labels.to_csv(f'task_path/labels_{fold}.csv', index=False)
             
             df_features = pd.DataFrame(features[task][fold])
-            df_features.to_csv(f'{args.labelled_fpath}/{args.clmbr_type}/{args.encoder}_{args.size}_{args.dropout}/{task}/features_{fold}.csv', index=False)
+            df_features.to_csv(f'task_path/features_{fold}.csv', index=False)
 
                                       
                 

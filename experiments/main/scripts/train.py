@@ -28,50 +28,65 @@ parser.add_argument(
 parser.add_argument(
     '--extracts_fpath', 
     type=str,
-    default="/local-scratch/nigam/projects/lguo/temp_ds_shift_robustness/clmbr/experiments/clmbr/data/extracts/20210723",
+    default="/local-scratch/nigam/projects/jlemmon/cl-clmbr/experiments/main/data/extracts/20210723",
 )
 
 parser.add_argument(
     '--cohort_fpath',
     type=str,
-    default="/local-scratch/nigam/projects/lguo/temp_ds_shift_robustness/clmbr/cohorts/admissions/cohort",
+    default="/local-scratch/nigam/projects/jlemmon/cl-clmbr/cohort",
 )
 
 parser.add_argument(
     '--infos_fpath',
     type=str,
-    default="/local-scratch/nigam/projects/lguo/temp_ds_shift_robustness/clmbr/experiments/clmbr/clmbr_artifacts/infos/"
-)
-
-parser.add_argument(
-    '--train_splits_fpath',
-    type=str,
-    default="/local-scratch/nigam/projects/lguo/temp_ds_shift_robustness/clmbr/experiments/clmbr/clmbr_artifacts/train_splits/"
+    default="/local-scratch/nigam/projects/jlemmon/cl-clmbr/experiments/main/artifacts/models/clmbr/pretrained/info"
 )
 
 parser.add_argument(
     '--models_fpath',
     type=str,
-    default="/local-scratch/nigam/projects/lguo/temp_ds_shift_robustness/clmbr/experiments/clmbr/clmbr_artifacts/models/"
+    default="/local-scratch/nigam/projects/jlemmon/cl-clmbr/experiments/main/artifacts/models/clmbr/pretrained/models"
 )
 
 parser.add_argument(
-    '--year_range',
+    '--train_end_date',
     type=str,
-    default="2009/2012",
-    help="start and end of the year range for training year group"
-) 
+    default='2015-12-31',
+    help='End date of training ids.'
+)
+
+parser.add_argument(
+    '--val_end_date',
+    type=str,
+    default='2016-07-01',
+    help='End date of validation ids.'
+)
+
+parser.add_argument(
+    '--test_start_date',
+    type=str,
+    default='2016-09-01',
+    help='Start date of test ids.'
+)
+
+parser.add_argument(
+    '--test_end_date',
+    type=str,
+    default='2017-09-01',
+    help='End date of test ids.'
+)
 
 parser.add_argument(
     '--excluded_patient_list',
     type=str,
-    default="/local-scratch/nigam/projects/lguo/temp_ds_shift_robustness/clmbr/experiments/clmbr/data/held_out_patients/excluded_patient_ids.txt"
+    default="/local-scratch/nigam/projects/jlemmon/cl-clmbr/experiments/main/data/held_out_patients/excluded_patient_ids.txt"
 )
 
 parser.add_argument(
     '--hparams_fpath',
     type=str,
-    default="/local-scratch/nigam/projects/lguo/temp_ds_shift_robustness/clmbr/experiments/clmbr/hyperparams/"
+    default="/local-scratch/nigam/projects/jlemmon/cl-clmbr/experiments/main/hyperparams/"
 )
 
 parser.add_argument(
@@ -90,182 +105,113 @@ parser.add_argument(
 parser.add_argument(
     '--n_gpu',
     type=int,
-    default=2
+    default=1
 )
 
 parser.add_argument(
     '--n_jobs',
     type=int,
-    default=12
+    default=6
 )
 
 parser.add_argument(
     '--gpu_num_start',
     type=int,
-    default=1
+    default=3
+)
+
+parser.add_argument(
+	'--seed',
+	type=int,
+	default=44
+)
+
+parser.add_argument(
+	'--device',
+	type=str,
+	default='cuda:3'
 )
 
 if __name__ == "__main__":
     
-    args = parser.parse_args()
-    
-    # threads
-    torch.set_num_threads(1)
-    joblib.Parallel(n_jobs=1)
-    
-    # create train and val patient IDs
-    train_splits_dir = os.path.join(
-        args.train_splits_fpath,
-        "_".join(args.year_range.split("/"))
-    )
-    
-    if args.overwrite and os.path.exists(train_splits_dir):
-        shutil.rmtree(train_splits_dir, ignore_errors=True)
-        
-    os.makedirs(train_splits_dir, exist_ok=True)
-    
-    year_range_list = [*range(
-        int(args.year_range.split("/")[0]), 
-        int(args.year_range.split("/")[-1])+1, 
-        1,
-    )]
-    
-    df_cohort = pd.read_parquet(
-        os.path.join(
-            args.cohort_fpath,
-            "cohort_split.parquet",
-        )
-    )
-    
-    df_cohort = df_cohort.assign(
-        date = pd.to_datetime(df_cohort['admit_date']).dt.date
-    )
-    
-    train = df_cohort.query(
-        "fold_id!=['val','test','1'] and admission_year==@year_range_list"
-    )
-    
-    val = df_cohort.query(
-        "fold_id==['1'] and admission_year==@year_range_list"
-    )
-    
-    # convert patient ids and save to train_splits path
-    train_ids, _ = convert_patient_data(
-        args.extracts_fpath, 
-        train['person_id'], 
-        train['date']
-    )
-    
-    with open(
-        os.path.join(
-            train_splits_dir,
-            f"train_patients.txt"
-        ), 
-        "w"
-    ) as f:
-        
-        for pid in train_ids:
-            f.write("%d\n" % pid)
-    
-    
-    val_ids, _ = convert_patient_data(
-        args.extracts_fpath, 
-        val['person_id'], 
-        val['date']
-    )
-    
-    with open(
-        os.path.join(
-            train_splits_dir,
-            f"val_patients.txt"
-        ), 
-        "w"
-    ) as f:
-        
-        for pid in val_ids:
-            f.write("%d\n" % pid)
-    
-    
-    # create info
-    info_dir=os.path.join(args.infos_fpath,"_".join(args.year_range.split("/")))
-    train_start_date=args.year_range.split("/")[0]
-    train_end_date=args.year_range.split("/")[-1]
-    val_start_date=args.year_range.split("/")[0]
-    val_end_date=args.year_range.split("/")[-1]
-    
-    if args.overwrite and os.path.exists(info_dir):
-        shutil.rmtree(info_dir, ignore_errors=True)
+	args = parser.parse_args()
+	
+	# threads
+	torch.set_num_threads(1)
+	joblib.Parallel(n_jobs=1)
 
-    run([
-        'clmbr_create_info',
-        f"{args.extracts_fpath}",
-        f"{info_dir}",
-        f"{train_end_date}-12-31",
-        f"{val_end_date}-12-31",
-        "--train_start_date", f"{train_start_date}-01-01",
-        "--val_start_date", f"{val_start_date}-01-01",
-        "--min_patient_count", args.min_patient_count,
-        "--excluded_patient_file", args.excluded_patient_list,
-        "--train_patient_file", f"{train_splits_dir}/train_patients.txt",
-        "--val_patient_file", f"{train_splits_dir}/val_patients.txt",
-    ])
+	grid = list(
+		ParameterGrid(
+			yaml.load(
+				open(
+					f"{os.path.join(args.hparams_fpath,args.encoder)}.yml",
+					'r'
+				),
+				Loader=yaml.FullLoader
+			)
+		)
+	)
     
-    grid = list(
-        ParameterGrid(
-            yaml.load(
-                open(
-                    f"{os.path.join(args.hparams_fpath,args.encoder)}.yml",
-                    'r'
-                ),
-                Loader=yaml.FullLoader
-            )
-        )
-    )
-    
-    processes=[]
+	processes=[]
     
     # collect args
-    for i,hparams in enumerate(grid):
+	for i,hparams in enumerate(grid):
+
+		# create info
+		info_dir=f'{args.infos_fpath}/{args.encoder}_sz_{hparams["size"]}_do_{hparams["dropout"]}_lr_{hparams["lr"]}_l2_{hparams["l2"]}'
+
+		train_end_date=args.train_end_date
+		val_end_date=args.val_end_date
+
+		if args.overwrite and os.path.exists(info_dir):
+			shutil.rmtree(info_dir, ignore_errors=True)
+
+		run([
+			'clmbr_create_info',
+			f"{args.extracts_fpath}",
+			f"{info_dir}",
+			f"{train_end_date}",
+			f"{val_end_date}",
+			"--min_patient_count", args.min_patient_count,
+			"--excluded_patient_file", args.excluded_patient_list,
+			"--seed", f'{args.seed}'
+		])
         
-        model_dir=os.path.join(
-            args.models_fpath,
-            "_".join(args.year_range.split("/")),
-            args.encoder,
-            f"{i}"
-        )
+		model_dir=f'{args.models_fpath}/{args.encoder}_sz_{hparams["size"]}_do_{hparams["dropout"]}_lr_{hparams["lr"]}_l2_{hparams["l2"]}'
+
+		if args.overwrite and os.path.exists(model_dir):
+			shutil.rmtree(model_dir, ignore_errors=True)
+			os.makedirs(model_dir, exist_ok=True)
         
-        if args.overwrite and os.path.exists(model_dir):
-            shutil.rmtree(model_dir, ignore_errors=True)
-            os.makedirs(model_dir, exist_ok=True)
+		p_args = [
+			'clmbr_train_model',
+			model_dir,
+			info_dir,
+			'--lr', f"{hparams['lr']}",
+			'--encoder_type', f"{hparams['encoder_type']}",
+			'--size', f"{hparams['size']}",
+			'--dropout', f"{hparams['dropout']}",
+			'--code_dropout', f"{hparams['code_dropout']}",
+			'--day_dropout', f"{hparams['day_dropout']}",
+			'--batch_size', f"{hparams['batch_size']}",
+			'--epochs', f"{hparams['epochs']}",
+			'--l2', f"{hparams['l2']}",
+			'--warmup_epochs', f"{hparams['warmup_epochs']}",
+			'--device', f'{args.device}',
+		]
         
-        p_args = [
-            'clmbr_train_model',
-            model_dir,
-            info_dir,
-            '--lr', f"{hparams['lr']}",
-            '--encoder_type', f"{hparams['encoder_type']}",
-            '--size', f"{hparams['size']}",
-            '--dropout', f"{hparams['dropout']}",
-            '--batch_size', f"{hparams['batch_size']}",
-            '--epochs', f"{hparams['epochs']}",
-            '--l2', f"{hparams['l2']}",
-            '--warmup_epochs', f"{hparams['warmup_epochs']}",
-            '--device', 'cuda:0',
-        ]
-        
-        processes.append(p_args)
-        
+		processes.append(p_args)
     # group processes 
-    processes = [
-        (
-            Popen(
-                p,
-                env=dict(os.environ, CUDA_VISIBLE_DEVICES = str(i%args.n_gpu+args.gpu_num_start))
-            ) for i,p in enumerate(processes)
-        )
-    ] * args.n_jobs
+	processes = [
+		(
+			Popen(
+				p,
+				env=dict(os.environ, CUDA_VISIBLE_DEVICES = str(i%args.n_gpu+args.gpu_num_start))
+			) for i,p in enumerate(processes)
+		)
+	] * args.n_jobs
 
     # submit n_jobs jobs at a time
-    for sub_p in zip_longest(*processes): 
-        for p in filter(None, sub_p):
-            p.wait()
+	for sub_p in zip_longest(*processes): 
+		for p in filter(None, sub_p):
+			p.wait()
