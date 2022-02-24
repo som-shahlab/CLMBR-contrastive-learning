@@ -2,6 +2,7 @@ import os
 import json
 import argparse
 import shutil
+import yaml
 from datetime import datetime
 
 import ehr_ml.timeline
@@ -20,17 +21,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+
+from sklearn.model_selection import ParameterGrid
 #from torch.utils.data import DataLoader, Dataset
 
 
 parser = argparse.ArgumentParser()
 
-parser.add_argument(
-    '--task',
-    type=str,
-    required=True,
-    help='Name of task to label. Accepted tasks are:\nhospital_mortality\nLOS_7\nicu_admission\nreadmission_30'
-)
 parser.add_argument(
     '--pt_model_path',
     type=str,
@@ -57,6 +54,13 @@ parser.add_argument(
     type=str,
     default="/local-scratch/nigam/projects/jlemmon/cl-clmbr/experiments/main/data/cohort",
     help='Base path for cohort file'
+)
+
+parser.add_argument(
+    '--hparams_fpath',
+    type=str,
+    default="/local-scratch/nigam/projects/jlemmon/cl-clmbr/experiments/main/hyperparams",
+    help='Base path for hyperparameter files'
 )
 
 parser.add_argument(
@@ -181,7 +185,7 @@ parser.add_argument(
 parser.add_argument(
     '--device',
     type=str,
-    default='cuda:0',
+    default='cuda:3',
     help='Device to run torch model on.'
 )
 
@@ -214,6 +218,12 @@ class Similarity(nn.Module):
 	def forward(self, x, y):
 		if self.sim == 'cos':
 			return self.cos(x, y) / self.temp
+		elif self.sim == 'sumcos':
+			# sum loss over patient timeline
+			
+			# iterate over patients
+			# iterate over patient timeline
+			# for day 1..D sum up cos(A_d,B_d)/self.temp
 		else:
 			return torch.dot(torch.flatten(x),torch.flatten(y)).unsqueeze(0).unsqueeze(0)
 
@@ -229,6 +239,8 @@ class Pooler(nn.Module):
 		# Only CLS style pooling for now
 		if self.pooler == 'cls':
 			return outputs[-1]
+		elif self.pooler == 'sumcos':
+			return outputs
 
 
 class ContrastiveLearn(nn.Module):
@@ -284,11 +296,11 @@ class ContrastiveLearn(nn.Module):
 
 		return outputs
     
-def load_data(args):
+def load_data(args, clmbr_hp):
     """
     Load datasets from split csv files.
     """
-    data_path = f'{args.labelled_fpath}/baseline/{args.encoder}_{args.size}_{args.dropout}_{args.lr}/{args.task}'
+    data_path = f'{args.labelled_fpath}/hospital_mortality/pretrained/{args.encoder}_sz_{clmbr_hp["size"]}_do_{clmbr_hp["dropout"]}_lr_{clmbr_hp["lr"]}_l2_{clmbr_hp["l2"]}'
     
     train_pids = pd.read_csv(f'{data_path}/ehr_ml_patient_ids_train.csv')
     val_pids = pd.read_csv(f'{data_path}/ehr_ml_patient_ids_val.csv')
@@ -347,41 +359,70 @@ if __name__ == '__main__':
 	args = parser.parse_args()
 
 	torch.manual_seed(args.seed)
+	
+	grid = list(
+		ParameterGrid(
+			yaml.load(
+				open(
+					f"{os.path.join(args.hparams_fpath,args.encoder)}.yml",
+					'r'
+				),
+				Loader=yaml.FullLoader
+			)
+		)
+	)
+	
+	cl_grid = list(
+		ParameterGrid(
+			yaml.load(
+				open(
+					f"{os.path.join(args.hparams_fpath,'cl')}.yml",
+					'r'
+				),
+				Loader=yaml.FullLoader
+			)
+		)
+	)
+	for i, clmbr_hp in enumerate(grid):
+		
+		clmbr_model_path = f'{args.pt_model_path}/{args.encoder}_sz_{clmbr_hp["size"]}_do_{clmbr_hp["dropout"]}_lr_{clmbr_hp["lr"]}_l2_{clmbr_hp["l2"]}'
+		print(clmbr_model_path)
+		
+		for j, cl_hp in enumerate(cl_grid):
+			clmbr_save_path = f"{args.model_path}/{args.encoder}_sz_{clmbr_hp['size']}_do_{clmbr_hp['dropout']}_lr_{clmbr_hp['lr']}_l2_{clmbr_hp['l2']}/bs_{cl_hp['batch_size']}_lr_{cl_hp['lr']}_temp_{cl_hp['temp']}_pool_{cl_hp['pool']}"
+			print(clmbr_save_path)
+			os.makedirs(f"{clmbr_save_path}",exist_ok=True)
+			train_data, val_data, test_data = load_data(args, clmbr_hp)
 
-	clmbr_model_path = f"{args.pt_model_path}/{args.encoder}_{args.size}_{args.dropout}_{args.lr}"
-	print(clmbr_model_path)
-	clmbr_save_path = f"{args.model_path}/contrastive_learn/{args.encoder}_{args.size}_{args.dropout}_{args.cl_lr}"
-	train_data, val_data, test_data = load_data(args)
+			dataset = PatientTimelineDataset(args.extract_path + '/extract.db', 
+											 args.extract_path + '/ontology.db', 
+											 f'{clmbr_model_path}/info.json', 
+											 train_data, 
+											 val_data ).to(args.device)
 
-	dataset = PatientTimelineDataset(args.extract_path + '/extract.db', 
-									 args.extract_path + '/ontology.db', 
-									 f'{clmbr_model_path}/info.json', 
-									 train_data, 
-									 val_data )
-	
-	clmbr_model = ehr_ml.clmbr.CLMBR.from_pretrained(clmbr_model_path, args.device)
-	# Modify CLMBR config settings
-	clmbr_model.config["model_dir"] = clmbr_save_path
-	clmbr_model.config["batch_size"] = args.batch_size
-	clmbr_model.config["e"] = args.cl_lr
-	clmbr_model.config["epochs_per_cycle"] = args.epochs
-	clmbr_model.config["warmup_epochs"] = 1
-	
-	config = clmbr_model.config
-	
-	clmbr_model.unfreeze()
-	# Get contrastive learning model 
-	model = ContrastiveLearn(clmbr_model, 2, args.pooler, args.temp, args.device).to(args.device)
-	model.train()
-	
-	# Run finetune procedure
-	clmbr_model = finetune(args, model, dataset)
-	clmbr_model.freeze()
-	
-	# Save model and save info and config to new model directory for downstream evaluation
-	torch.save(clmbr_model, clmbr_save_path + '/best')
-	shutil.copyfile(f'{clmbr_model_path}/info.json', f'{clmbr_save_path}/info.json')
-	with open(f'{clmbr_save_path}/config.json', 'w') as f:
-		json.dump(config,f)
+			clmbr_model = ehr_ml.clmbr.CLMBR.from_pretrained(clmbr_model_path, args.device)
+			# Modify CLMBR config settings
+			clmbr_model.config["model_dir"] = clmbr_save_path
+			clmbr_model.config["batch_size"] = cl_hp['batch_size']
+			clmbr_model.config["e"] = cl_hp['lr']
+			clmbr_model.config["epochs_per_cycle"] = args.epochs
+			clmbr_model.config["warmup_epochs"] = 1
+
+			config = clmbr_model.config
+
+			clmbr_model.unfreeze()
+			# Get contrastive learning model 
+			model = ContrastiveLearn(clmbr_model, 2, cl_hp['pool'], cl_hp['temp'], args.device).to(args.device)
+			model.train()
+
+			# Run finetune procedure
+			clmbr_model = finetune(args, model, dataset)
+			clmbr_model.freeze()
+
+			# Save model and save info and config to new model directory for downstream evaluation
+			torch.save(clmbr_model.state_dict(), os.path.join(clmbr_save_path,'best'))
+			shutil.copyfile(f'{clmbr_model_path}/info.json', f'{clmbr_save_path}/info.json')
+			with open(f'{clmbr_save_path}/config.json', 'w') as f:
+				json.dump(config,f)
         
     

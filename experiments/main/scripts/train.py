@@ -52,28 +52,28 @@ parser.add_argument(
 parser.add_argument(
     '--train_end_date',
     type=str,
-    default='2015-12-31',
+    default='2019-06-01',
     help='End date of training ids.'
 )
 
 parser.add_argument(
     '--val_end_date',
     type=str,
-    default='2016-07-01',
+    default='2019-12-31',
     help='End date of validation ids.'
 )
 
 parser.add_argument(
     '--test_start_date',
     type=str,
-    default='2016-09-01',
+    default='2020-01-01',
     help='Start date of test ids.'
 )
 
 parser.add_argument(
     '--test_end_date',
     type=str,
-    default='2017-09-01',
+    default='2020-12-31',
     help='End date of test ids.'
 )
 
@@ -129,7 +129,7 @@ parser.add_argument(
 parser.add_argument(
 	'--device',
 	type=str,
-	default='cuda:3'
+	default='cuda:0'
 )
 
 if __name__ == "__main__":
@@ -152,37 +152,39 @@ if __name__ == "__main__":
 		)
 	)
     
+	# create info
+	info_dir=f'{args.infos_fpath}'
+	train_end_date=args.train_end_date
+	val_end_date=args.val_end_date
+	
+	
+	if args.overwrite and os.path.exists(info_dir):
+		shutil.rmtree(info_dir, ignore_errors=True)
+
+	run([
+		'clmbr_create_info',
+		f"{args.extracts_fpath}",
+		f"{info_dir}",
+		f"{train_end_date}",
+		f"{val_end_date}",
+		"--min_patient_count", args.min_patient_count,
+		"--excluded_patient_file", args.excluded_patient_list,
+		"--seed", f'{args.seed}'
+	])
+	
 	processes=[]
     
     # collect args
 	for i,hparams in enumerate(grid):
-
-		# create info
-		info_dir=f'{args.infos_fpath}/{args.encoder}_sz_{hparams["size"]}_do_{hparams["dropout"]}_lr_{hparams["lr"]}_l2_{hparams["l2"]}'
-
-		train_end_date=args.train_end_date
-		val_end_date=args.val_end_date
-
-		if args.overwrite and os.path.exists(info_dir):
-			shutil.rmtree(info_dir, ignore_errors=True)
-
-		run([
-			'clmbr_create_info',
-			f"{args.extracts_fpath}",
-			f"{info_dir}",
-			f"{train_end_date}",
-			f"{val_end_date}",
-			"--min_patient_count", args.min_patient_count,
-			"--excluded_patient_file", args.excluded_patient_list,
-			"--seed", f'{args.seed}'
-		])
         
-		model_dir=f'{args.models_fpath}/{args.encoder}_sz_{hparams["size"]}_do_{hparams["dropout"]}_lr_{hparams["lr"]}_l2_{hparams["l2"]}'
+		model_dir=f'{args.models_fpath}/{args.encoder}_sz_{hparams["size"]}_do_{hparams["dropout"]}_cd_{hparams["code_dropout"]}_dd_{hparams["day_dropout"]}_lr_{hparams["lr"]}_l2_{hparams["l2"]}'
 
 		if args.overwrite and os.path.exists(model_dir):
 			shutil.rmtree(model_dir, ignore_errors=True)
 			os.makedirs(model_dir, exist_ok=True)
         
+		torch.manual_seed(args.seed)
+		
 		p_args = [
 			'clmbr_train_model',
 			model_dir,
@@ -201,6 +203,7 @@ if __name__ == "__main__":
 		]
         
 		processes.append(p_args)
+
     # group processes 
 	processes = [
 		(
