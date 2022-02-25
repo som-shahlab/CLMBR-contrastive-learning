@@ -6,6 +6,7 @@ import joblib
 import pdb
 import re
 import yaml
+import time
 
 import pandas as pd
 import numpy as np
@@ -117,7 +118,7 @@ parser.add_argument(
 parser.add_argument(
     "--n_jobs",
     type=int,
-    default=4,
+    default=6,
     help="number of threads"
 )
 
@@ -154,7 +155,9 @@ def load_data(model_path):
     
     test_labels = pd.read_csv(f'{model_path}/labels_test.csv')
     
-    test_feats = pd.read_csv(f'{model_path}/features_test.csv')
+    with open(f'{model_path}/features_test.pkl', 'rb') as f:
+		test_feat_dict = pickle.load(f)
+	test_feats = pd.DataFrame(test_feat_dict)
 
     test_pred_ids = pd.read_csv(f'{model_path}/prediction_ids_test.csv')
     
@@ -181,7 +184,7 @@ def get_params(args):
     
     return param_grid
 
-def train_model(args, task, clmbr_hp, cl_hp=None):
+def eval_model(args, task, clmbr_hp, cl_hp=None):
 	hparams_grid = get_params(args)
 	
 	# Contrastive learning model location depends on base CLMBR hyperparams, so for CL need to pass both hparams lists in
@@ -192,10 +195,9 @@ def train_model(args, task, clmbr_hp, cl_hp=None):
 		data_path = f'{args.labelled_fpath}/{task}/{args.clmbr_type}/{args.encoder}_sz_{hparams["size"]}_do_{hparams["dropout"]}_lr_{hparams["lr"]}_l2_{hparams["l2"]}'
 	
 	if cl_hp:
-		fpath = f'{args.models_path}/{args.model}/{task}/{args.encoder}_sz_{clmbr_hp['size']}_do_{clmbr_hp['dropout']}_lr_{clmbr_hp['lr']}_l2_{clmbr_hp['l2']}/\
-					bs_{clmbr_hp['batch_size']}_lr_{clmbr_hp['lr']}_temp_{clmbr_hp['temp']}_pool_{cl_hp['pool']}'
+		model_save_fpath = f'{args.models_path}/{task}{args.model}/{task}/{args.encoder}_sz_{clmbr_hp["size"]}_do_{clmbr_hp["dropout"]}_cd_{clmbr_hp["code_dropout"]}_dd_{clmbr_hp["day_dropout"]}_lr_{clmbr_hp["lr"]}_l2_{clmbr_hp["l2"]}'/bs_{clmbr_hp['batch_size']}_lr_{clmbr_hp['lr']}_temp_{clmbr_hp['temp']}_pool_{cl_hp['pool']}'
 	else:
-		fpath = f'{args.models_path}/{args.model}/{task}/{args.encoder}_sz_{hparams["size"]}_do_{hparams["dropout"]}_lr_{hparams["lr"]}_l2_{hparams["l2"]}'
+			model_save_fpath = f'{args.models_path}/{task}{args.model}/{task}/{args.encoder}_sz_{clmbr_hp["size"]}_do_{clmbr_hp["dropout"]}_cd_{clmbr_hp["code_dropout"]}_dd_{clmbr_hp["day_dropout"]}_lr_{clmbr_hp["lr"]}_l2_{clmbr_hp["l2"]}'
 		
 	
     # get data
@@ -204,52 +206,36 @@ def train_model(args, task, clmbr_hp, cl_hp=None):
 	#define model save path
 	
 	for i, hp in enumerate(hparams_grid):
-		model_name = '_'.join([
-			args.model,
-			f'{hp["C"]}',
-		])
 		
-		model_num = str(i)
+		m = pickle.load(open(f'{model_save_fpath}/{hp['C']}/model.pkl', 'rb'))
 
-
-		os.makedirs(fpath/{hp['C']},exist_ok=True)
-
-		#train model
-		if args.model == 'lr':
-			m = lr(maxiter=hp['maxiter'], C=hp['C'])
-			m.fit(X_train, y_train.flatten())
-		else:
-			pass
-
-		#get prediction probability df with validation data
+		evaluator = StandardEvaluator()
+		t1 = time.time()
 		df = pd.DataFrame({
 			'pred_probs':m.predict_proba(X_test)[:,1],
 			'labels':y_test.flatten(),
 			'task':task,
-			'prediction_id':val_pred_ids
+			'test_group':'test',
+			'prediction_id':test_pred_ids
 		})
-
-		#save model, hparams used and validation pred probs
-		pickle.dump(
-			m,
-			open(f'{fpath}/{hp['C']}/model.pkl', 'wb')
+		
+		df_test_ci, df_test = evaluator.bootstrap_evaluate(
+			df,
+			n_boot = args.n_boot,
+			n_jobs = args.n_jobs,
+			strata_vars_eval=['test_group'],
+			strata_vars_boot=['labels'],
+			patient_id_var='prediction_id',
+			return_result_df = True
 		)
-
-		yaml.dump(
-			hparams,
-			open(f'{fpath}/{hp['C']}/hparams.yml', 'w')
-		)
-
-		if cl_hp:
-			fpath = f'{args.results_path}/{task}/{args.model}/{args.encoder}_sz_{clmbr_hp['size']}_do_{clmbr_hp['dropout']}_lr_{clmbr_hp['lr']}_l2_{clmbr_hp['l2']}/\
-						bs_{clmbr_hp['batch_size']}_lr_{clmbr_hp['lr']}_temp_{clmbr_hp['temp']}_pool_{cl_hp['pool']}'
-		else:
-			fpath = f'{args.results_path}/{task}/{args.model}/{args.encoder}_sz_{hparams["size"]}_do_{hparams["dropout"]}_lr_{hparams["lr"]}_l2_{hparams["l2"]}'
-
-		os.makedirs(fpath/{hp['C']},exist_ok=True)
-
-		df.reset_index(drop=True).to_csv(
-			f'{fpath}/val_pred_probs.csv'
+		print(f'took {time.time() - t1} seconds to eval test')
+		os.makedirs(f"results_save_fpath/{hp['C']}",exist_ok=True)
+		
+		df_test['C'] = hp['C']
+		df_test['model'] = args.model
+		df_test['CLMBR_model'] = 'PT' if cl_hp is None else 'CL'
+		df_test_ci.reset_index(drop=True).to_csv(
+			f"{results_save_fpath}/{hp['C']}/test_eval.csv"
 		)
 
 
@@ -300,9 +286,9 @@ for task in tasks:
 
     # Iterate through hyperparam lists
     for i, clmbr_hp in enumerate(clmbr_grid):
-		train_model(args, task, clmbr_hp)
+		eval_model(args, task, clmbr_hp)
         for j, cl_hp in enumerate(cl_grid):
-			train_model(args, task, clmbr_hp, cl_hp)
+			eval_model(args, task, clmbr_hp, cl_hp)
         
         
         

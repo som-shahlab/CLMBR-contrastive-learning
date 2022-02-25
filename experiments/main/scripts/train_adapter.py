@@ -118,7 +118,7 @@ parser.add_argument(
 parser.add_argument(
     "--n_jobs",
     type=int,
-    default=4,
+    default=6,
     help="number of threads"
 )
 
@@ -208,7 +208,7 @@ def train_model(args, task, clmbr_hp):
 	X_train, y_train, train_pred_ids = train_data[0], train_data[1], train_data[2]
 	X_val, y_val, val_pred_ids = val_data[0], val_data[1], val_data[2]
 	
-	model_save_fpath = f'{args.models_path}/{task}{args.model}/{task}/{args.encoder}_sz_{clmbr_hp["size"]}_do_{clmbr_hp["dropout"]}_cd_{clmbr_hp["code_dropout"]}_dd_{clmbr_hp["day_dropout"]}_lr_{clmbr_hp["lr"]}_l2_{clmbr_hp["l2"]}'
+	model_save_fpath = f'{args.models_path}/{args.model}/{task}/{args.encoder}_sz_{clmbr_hp["size"]}_do_{clmbr_hp["dropout"]}_cd_{clmbr_hp["code_dropout"]}_dd_{clmbr_hp["day_dropout"]}_lr_{clmbr_hp["lr"]}_l2_{clmbr_hp["l2"]}'
 	
 	results_save_fpath = f'{args.results_path}/{args.model}/{task}/{args.encoder}_sz_{clmbr_hp["size"]}_do_{clmbr_hp["dropout"]}_cd_{clmbr_hp["code_dropout"]}_dd_{clmbr_hp["day_dropout"]}_lr_{clmbr_hp["lr"]}_l2_{clmbr_hp["l2"]}'
 		
@@ -232,7 +232,7 @@ def train_model(args, task, clmbr_hp):
 		#train model
 		t1 = time.time()
 		if args.model == 'lr':
-			m = lr(n_jobs=args.n_jobs, **hp)
+			m = lr(solver='sag', n_jobs=args.n_jobs, **hp)
 		else:
 			pass
 		
@@ -243,7 +243,7 @@ def train_model(args, task, clmbr_hp):
 			'pred_probs':m.predict_proba(X_val)[:,1],
 			'labels':y_val.flatten(),
 			'task':task,
-			'prediction_id':val_pred_ids,
+			'prediction_id':val_pred_ids.flatten(),
 			'test_group':'val',
 			'C':hp['C'],
 			'model':args.model
@@ -291,34 +291,6 @@ def train_model(args, task, clmbr_hp):
 
 		lr_eval_df = pd.concat([lr_eval_df, df_eval], ignore_index=True)
 		
-# 		evaluator = StandardEvaluator()
-# 		t1 = time.time()
-# 		df = pd.DataFrame({
-# 			'pred_probs':m.predict_proba(X_test)[:,1],
-# 			'labels':y_test.flatten(),
-# 			'task':task,
-# 			'test_group':'test',
-# 			'prediction_id':test_pred_ids
-# 		})
-		
-# 		df_test_ci, df_test = evaluator.bootstrap_evaluate(
-# 			df,
-# 			n_boot = args.n_boot,
-# 			n_jobs = args.n_jobs,
-# 			strata_vars_eval=['test_group'],
-# 			strata_vars_boot=['labels'],
-# 			patient_id_var='prediction_id',
-# 			return_result_df = True
-# 		)
-# 		print(f'took {time.time() - t1} seconds to eval test')
-# 		os.makedirs(f"results_save_fpath/{hp['C']}",exist_ok=True)
-		
-# 		df_test['C'] = hp['C']
-# 		df_test['model'] = args.model
-# 		df_test['CLMBR_model'] = 'PT'
-# 		df_test_ci.reset_index(drop=True).to_csv(
-# 			f"{results_save_fpath}/{hp['C']}/test_eval.csv"
-# 		)
 	print(clmbr_hp)
 	print(lr_eval_df)
 
