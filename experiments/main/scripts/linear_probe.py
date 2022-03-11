@@ -23,6 +23,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 
 from sklearn.model_selection import ParameterGrid
+from sklearn.metrics import roc_auc_score
 #from torch.utils.data import DataLoader, Dataset
 
 
@@ -101,7 +102,7 @@ parser.add_argument(
 parser.add_argument(
     '--epochs',
     type=int,
-    default=20,
+    default=10,
     help='Number of training epochs.'
 )
 
@@ -169,25 +170,27 @@ parser.add_argument(
 )
 
 
-class LinearProbe(nn.module):
-	def __init__(self, clmbr_model, size):
+class LinearProbe(nn.Module):
+	def __init__(self, clmbr_model, size, device='cuda:0'):
 		super().__init__()
 		self.clmbr_model = clmbr_model
-		self.config = clmbr_moel.config
+		self.config = clmbr_model.config
+		
 		self.dense = nn.Linear(size,1)
 		self.activation = nn.Sigmoid()
 		
-		self.criterion = nn.BCELoss()
+		self.device = torch.device(device)
 	
-	def forward(self, x, y):
-		features = self.clmbr_model(x)
-		preds = self.dense(features)
-		preds = self.activation(preds)
+	def forward(self, batch):
+		features = self.clmbr_model.timeline_model(batch['rnn']).to(self.device)
+		label_indices, label_values = batch['label']
 		
-		outputs['preds'] = preds
-		outputs['loss'] = self.criterion(preds, y)
+		flat_features = features.view((-1, features.shape[-1]))
+		target_features = F.embedding(label_indices, flat_features).to(args.device)
+									
+		preds = self.activation(self.dense(target_features))
 		
-		return outputs
+		return preds, label_values.to(torch.float32)
 	
 	def freeze_clmbr(self):
 		self.clmbr_model.freeze()
@@ -196,26 +199,26 @@ class LinearProbe(nn.module):
 		self.clmbr_model.unfreeze()
 
 	
-def load_datasets(args, clmbr_hp):
-    """
-    Load datasets from split csv files.
-    """
-    data_path = f'{args.labelled_fpath}/{args.task}/pretrained/{args.encoder}_sz_{clmbr_hp["size"]}_do_{clmbr_hp["dropout"]}_lr_{clmbr_hp["lr"]}_l2_{clmbr_hp["l2"]}'
-    
-    train_pids = pd.read_csv(f'{data_path}/ehr_ml_patient_ids_train.csv')
-    val_pids = pd.read_csv(f'{data_path}/ehr_ml_patient_ids_val.csv')
+def load_datasets(args, task, clmbr_hp):
+	"""
+	Load datasets from split csv files.
+	"""
+	data_path = f'{args.labelled_fpath}/{task}/pretrained/{args.encoder}_sz_{clmbr_hp["size"]}_do_{clmbr_hp["dropout"]}_cd_{clmbr_hp["code_dropout"]}_dd_{clmbr_hp["day_dropout"]}_lr_{clmbr_hp["lr"]}_l2_{clmbr_hp["l2"]}'
+
+	train_pids = pd.read_csv(f'{data_path}/ehr_ml_patient_ids_train.csv')
+	val_pids = pd.read_csv(f'{data_path}/ehr_ml_patient_ids_val.csv')
 	test_pids = pd.read_csv(f'{data_path}/ehr_ml_patient_ids_test.csv')
-    
-    train_days = pd.read_csv(f'{data_path}/day_indices_train.csv')
-    val_days = pd.read_csv(f'{data_path}/day_indices_val.csv')
+
+	train_days = pd.read_csv(f'{data_path}/day_indices_train.csv')
+	val_days = pd.read_csv(f'{data_path}/day_indices_val.csv')
 	test_days = pd.read_csv(f'{data_path}/day_indices_test.csv')
-    
-    train_labels = pd.read_csv(f'{data_path}/labels_train.csv')
-    val_labels = pd.read_csv(f'{data_path}/labels_val.csv')
+
+	train_labels = pd.read_csv(f'{data_path}/labels_train.csv')
+	val_labels = pd.read_csv(f'{data_path}/labels_val.csv')
 	test_labels = pd.read_csv(f'{data_path}/labels_test.csv')
-    
-    train_data = (train_labels.to_numpy().flatten(),train_pids.to_numpy().flatten(),train_days.to_numpy().flatten())
-    val_data = (val_labels.to_numpy().flatten(),val_pids.to_numpy().flatten(),val_days.to_numpy().flatten())
+
+	train_data = (train_labels.to_numpy().flatten(),train_pids.to_numpy().flatten(),train_days.to_numpy().flatten())
+	val_data = (val_labels.to_numpy().flatten(),val_pids.to_numpy().flatten(),val_days.to_numpy().flatten())
 	test_data = (test_labels.to_numpy().flatten(),test_pids.to_numpy().flatten(),test_days.to_numpy().flatten())
 	
 	train_dataset = PatientTimelineDataset(args.extract_path + '/extract.db', 
@@ -234,40 +237,51 @@ def load_datasets(args, clmbr_hp):
 										 test_data, 
 										 test_data )
     
-    return train_dataset, val_dataset, test_dataset
+	return train_dataset, val_dataset, test_dataset
 
 
 def train_probe(args, model, dataset):
-	train_loader = DataLoader(dataset, model.config['num_first'], is_val=False, batch_size=model.config["batch_size"], seed=args.seed, device=args.device)
 	model.train()
 	model.freeze_clmbr()
 	optimizer = optim.Adam([p for n, p in model.named_parameters() if p.requires_grad], lr=args.lr)
 	
-	for e in range(args.epochs):
-		for batch in train_loader:
-			
-			optimizer.zero_grad()
-			outputs = model(batch)
-			loss = outputs['loss']
-			
-			loss.backward()
-			print('training loss', loss.item())
+	criterion = nn.BCELoss()
 	
+	for e in range(args.epochs):
+		print(f'epoch {e+1}/{args.epochs}')
+		epoch_loss = 0.0
+		with DataLoader(dataset, model.config['num_first'], is_val=False, batch_size=model.config["batch_size"], device=args.device) as train_loader:
+			for batch in train_loader:
+
+				optimizer.zero_grad()
+				logits, labels = model(batch)
+				loss = criterion(logits, labels.unsqueeze(-1))
+
+				loss.backward()
+				optimizer.step()
+				# print('batch training loss', loss.item())
+				epoch_loss += loss.item()
+		print('epoch loss:', epoch_loss)
 	return model
 
 def evaluate_probe(args, model, dataset):
-	eval_loader = DataLoader(dataset, model.config['num_first'], is_val=True, batch_size=model.config['batch_size'], seed=args.seed, device=args.device)
 	model.eval()
 	
+	criterion = nn.BCELoss()
+	
 	preds = []
+	labels = []
 	losses = []
 	with torch.no_grad():
-		for batch in eval_loader:
-			outputs = model(batch)
-			losses.append(outputs['loss'])
-			preds.append(outputs['preds'])
+		with DataLoader(dataset, model.config['num_first'], is_val=True, batch_size=model.config['batch_size'], seed=args.seed, device=args.device) as eval_loader:
+			for batch in eval_loader:
+				logits, labels = model(batch)
+				loss = criterion(logits, labels.unsqueeze(-1))
+				losses.append(loss.item())
+				preds.append(list(logits.cpu().numpy()))
+				labels.append(list(labels.cpu().numpy()))
 	
-	return preds, losses
+	return preds, labels, losses
 			
 	
 if __name__ == '__main__':
@@ -293,27 +307,35 @@ if __name__ == '__main__':
 		
 		for task in tasks:
 		
-			clmbr_model_path = f'{args.pt_model_path}/{args.encoder}_sz_{clmbr_hp["size"]}_do_{clmbr_hp["dropout"]}_lr_{clmbr_hp["lr"]}_l2_{clmbr_hp["l2"]}'
+			clmbr_model_path = f'{args.pt_model_path}/{args.encoder}_sz_{clmbr_hp["size"]}_do_{clmbr_hp["dropout"]}_cd_{clmbr_hp["code_dropout"]}_dd_{clmbr_hp["day_dropout"]}_lr_{clmbr_hp["lr"]}_l2_{clmbr_hp["l2"]}'
 			print(clmbr_model_path)
 
 
-			train_dataset, val_dataset, test_dataset = load_datasets(args, clmbr_hp)
+			train_dataset, val_dataset, test_dataset = load_datasets(args, task, clmbr_hp)
 
-			probe_save_path = f'{args.probe_path}/baseline/{args.encoder}_sz_{clmbr_hp["size"]}_do_{clmbr_hp["dropout"]}_lr_{clmbr_hp["lr"]}_l2_{clmbr_hp["l2"]}/{task}''
-			os.makedirs(f"{clmbr_save_path}",exist_ok=True)
+			probe_save_path = f'{args.probe_path}/baseline/{args.encoder}_sz_{clmbr_hp["size"]}_do_{clmbr_hp["dropout"]}_cd_{clmbr_hp["code_dropout"]}_dd_{clmbr_hp["day_dropout"]}_lr_{clmbr_hp["lr"]}_l2_{clmbr_hp["l2"]}/{task}'
+			os.makedirs(f"{probe_save_path}",exist_ok=True)
 			
-			clmbr_model = ehr_ml.clmbr.CLMBR.from_pretrained(clmbr_model_path, args.device)
+			clmbr_model = ehr_ml.clmbr.CLMBR.from_pretrained(clmbr_model_path, args.device).to(args.device)
 			clmbr_model.freeze()
 			
 			probe_model = LinearProbe(clmbr_model, clmbr_hp['size'])
 			
-			probe_model = train_probe(args, probe_model, dataset)
+			probe_model.to(args.device)
 			
-			val_preds, val_losses = evaluate_probe(args, probe_model, val_dataset)
+			print('training probe')
+			
+			probe_model = train_probe(args, probe_model, train_dataset)
+			
+			print('validating probe')
+			val_preds, val_labels, val_losses = evaluate_probe(args, probe_model, val_dataset)
 			print(val_preds)
 			print(val_losses)
+			print(roc_auc_score(val_preds, val_labels))
 			
-			test_preds, test_losses = evaluate_probe(args, probe_model, test_dataset)
+			print('testing probe')
+			test_preds, test_labels, test_losses = evaluate_probe(args, probe_model, test_dataset)
 			print(test_preds)
 			print(test_losses)
-		
+			
+			print(roc_auc_score(test_preds, test_labels))
