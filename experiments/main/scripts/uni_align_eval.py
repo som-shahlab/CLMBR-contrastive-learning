@@ -286,7 +286,7 @@ def eval_model(args, task, val_dataset, test_dataset, clmbr_hp, cl_hp=None):
 	df['CLMBR'] = 'CL' if cl_hp else 'BL'
 	ci_df = pd.concat([ci_df,df])
 	
-	ci_df.reset_index(drop=True).to_csv(f'{results_save_fpath}/align_uniform_eval.csv')
+	ci_df.reset_index(drop=True).to_csv(f'{results_save_fpath}/uni_align_eval.csv')
 
 #-------------------------------------------------------------------
 # run

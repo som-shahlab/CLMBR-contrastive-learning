@@ -1,15 +1,13 @@
 lr:
-- 0.01
 - 0.001
 encoder_type:
 - gru
 size:
 - 800
 dropout:
-- 0
-day_dropout:
-- 0.1
 - 0.2
+day_dropout:
+- 0
 code_dropout:
 - 0
 batch_size:
@@ -19,5 +17,4 @@ epochs:
 warmup_epochs:
 - 2
 l2:
-- 0.1
 - 0.01

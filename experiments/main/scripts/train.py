@@ -111,7 +111,7 @@ parser.add_argument(
 parser.add_argument(
     '--n_jobs',
     type=int,
-    default=6
+    default=8
 )
 
 parser.add_argument(

@@ -73,28 +73,28 @@ parser.add_argument(
 parser.add_argument(
     '--train_end_date',
     type=str,
-    default='2015-12-31',
+    default='2019-06-01',
     help='End date of training ids.'
 )
 
 parser.add_argument(
     '--val_end_date',
     type=str,
-    default='2016-07-01',
+    default='2019-12-31',
     help='End date of validation ids.'
 )
 
 parser.add_argument(
     '--test_start_date',
     type=str,
-    default='2016-09-01',
+    default='2020-01-01',
     help='Start date of test ids.'
 )
 
 parser.add_argument(
     '--test_end_date',
     type=str,
-    default='2017-09-01',
+    default='2020-12-31',
     help='End date of test ids.'
 )
 
@@ -198,122 +198,6 @@ def get_params(args):
     
     return param_grid
 
-def train_model(args, task, clmbr_hp, X_train, y_train, X_val, y_val, val_pred_ids, X_test, y_test, test_pred_ids):
-	hparams_grid = get_params(args)
-	
-	model_save_fpath = f'{args.models_path}/{args.model}/{task}/{args.encoder}_sz_{hparams["size"]}_do_{hparams["dropout"]}_cd_{hparams["code_dropout"]}_dd_{hparams["day_dropout"]}_lr_{hparams["lr"]}_l2_{hparams["l2"]}'
-	results_save_fpath = f'{args.models_path}/{args.model}/{task}/{args.encoder}_sz_{hparams["size"]}_do_{hparams["dropout"]}_cd_{hparams["code_dropout"]}_dd_{hparams["day_dropout"]}_lr_{hparams["lr"]}_l2_{hparams["l2"]}'
-		
-	#define model save path
-	
-	lr_eval_df = pd.DataFrame()
-	
-	for i, hp in enumerate(hparams_grid):
-		model_name = '_'.join([
-			args.model,
-			f'{hp["C"]}',
-		])
-
-		model_num = str(i)
-
-
-		os.makedirs(f"{model_save_fpath}/{hp['C']}",exist_ok=True)
-		
-		os.makedirs(f"{results_save_fpath}/{hp['C']}",exist_ok=True)
-
-		#train model
-		if args.model == 'lr':
-			m = lr(n_jobs=args.n_jobs, **hp)
-		else:
-			pass
-		
-		m.fit(X_train, y_train.flatten())
-
-		#get prediction probability df with validation data
-		df = pd.DataFrame({
-			'pred_probs':m.predict_proba(X_val)[:,1],
-			'labels':y_val.flatten(),
-			'task':task,
-			'prediction_id':val_pred_ids,
-			'test_group':'val',
-			'C':hp['C'],
-			'model':args.model
-		})
-		print(df)
-		#save model, hparams used and validation pred probs
-		pickle.dump(
-			m,
-			open(f"{model_save_fpath}/{hp['C']}/model.pkl", 'wb')
-		)
-
-		yaml.dump(
-			hp,
-			open(f"{model_save_fpath}/{hp['C']}/hparams.yml", 'w')
-		)
-
-		df.reset_index(drop=True).to_csv(
-			f"{model_save_fpath}/{hp['C']}/val_pred_probs.csv"
-		)
-		# initialize evaluator
-		evaluator = StandardEvaluator()
-
-		df_eval_ci, df_eval = evaluator.bootstrap_evaluate(
-			df,
-			n_boot = args.n_boot,
-			n_jobs = args.n_jobs,
-			strata_vars_eval=['test_group'],
-			strata_vars_boot=['labels'],
-			patient_id_var='prediction_id',
-			return_result_df = True
-		)
-		
-		print(df_eval_ci)
-		
-		print(df_eval)
-
-		df_eval_ci.reset_index(drop=True).to_csv(
-			f"{results_save_fpath}/{hp['C']}/val_eval.csv"
-		)
-
-		df_eval['C'] = hp['C']
-		df_eval['model'] = args.model
-		df_eval['CLMBR_model'] = 'BL'
-
-
-		lr_eval_df = pd.concat([lr_eval_df, df_eval], ignore_index=True)
-		
-		evaluator = StandardEvaluator()
-		
-		df = pd.DataFrame({
-			'pred_probs':m.predict_proba(X_test)[:,1],
-			'labels':y_test.flatten(),
-			'task':task,
-			'test_group':'test',
-			'prediction_id':test_pred_ids
-		})
-		
-		df_test_ci, df_test = evaluator.bootstrap_evaluate(
-			df,
-			n_boot = args.n_boot,
-			n_jobs = args.n_jobs,
-			strata_vars_eval=['test_group'],
-			strata_vars_boot=['labels'],
-			patient_id_var='prediction_id',
-			return_result_df = True
-		)
-		
-		os.makedirs(f"results_save_fpath/{hp['C']}",exist_ok=True)
-		
-		df_test['C'] = hp['C']
-		df_test['model'] = args.model
-		df_test['CLMBR_model'] = 'PT'
-		df_test_ci.reset_index(drop=True).to_csv(
-			f"{results_save_fpath}/{hp['C']}/test_eval.csv"
-		)
-	print(clmbr_hp)
-	print(lr_eval_df)
-	
-
 if __name__ == '__main__':
     
 	args = parser.parse_args()
@@ -326,7 +210,7 @@ if __name__ == '__main__':
 		ParameterGrid(
 			yaml.load(
 				open(
-					f"{os.path.join(args.hparams_fpath,args.encoder)}2.yml",
+					f"{os.path.join(args.hparams_fpath,args.encoder)}-do-best.yml",
 					'r'
 				),
 				Loader=yaml.FullLoader
@@ -375,15 +259,19 @@ if __name__ == '__main__':
 
 				if fold == 'train':
 					df = dataset.query(f"{task}_fold_id!=['test','val','ignore']")
-					mask = (df['date'] <= train_end_date)
+					print('train end:', train_end_date)
+					mask = (df['date'] < train_end_date) | (df['date'] == train_end_date)
 				elif fold == 'val':
 					df = dataset.query(f"{task}_fold_id==['val']")
-					mask = (df['date'] >= train_end_date) & (df['date'] <= val_end_date)
+					print('train end:', train_end_date, 'val end:', val_end_date)
+					mask = (df['date'] > train_end_date) & ((df['date'] < val_end_date) | (df['date'] == val_end_date))
 				else:
 					df = dataset.query(f"{task}_fold_id==['test']")
-					mask = (df['date'] >= test_start_date) & (df['date'] <= test_end_date)
+					print('test start:', test_start_date, 'test end:', test_end_date)
+					mask = ((df['date'] > test_start_date) | (df['date'] == test_start_date)) & ((df['date'] < test_end_date) | (df['date'] == test_end_date))
 				df = df.loc[mask].reset_index()
-
+				print(min(df['date']))
+				print(max(df['date']))
 				ehr_ml_patient_ids[task][fold], day_indices[task][fold] = convert_patient_data(args.extract_path, df['person_id'], 
 																							   df['admit_date'].dt.date if task!='readmission_30' else df['discharge_date'].dt.date)
 				labels[task][fold] = df[task]
@@ -421,10 +309,6 @@ if __name__ == '__main__':
 				with open(f'{task_path}/features_{fold}.pkl', 'wb') as f:
 					pickle.dump(features[task][fold], f)
 				
-		#	train_model(args, task, hparams, features[task]['train'], labels[task]['train'].to_numpy(), features[task]['val'], labels[task]['val'].to_numpy(), prediction_ids[task]['val'],
-		#			   features[task]['test'], labels[task]['test'].to_numpy(), prediction_ids[task]['test'])
-
-                                      
                 
             
         
