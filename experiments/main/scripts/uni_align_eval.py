@@ -52,6 +52,13 @@ parser.add_argument(
 )
 
 parser.add_argument(
+    '--ft_model_path',
+    type=str,
+    default='/local-scratch/nigam/projects/jlemmon/cl-clmbr/experiments/main/artifacts/models/clmbr/contrastive_learn/models/gru_sz_800_do_0.1_cd_0_dd_0_lr_0.001_l2_0.01/best',
+    help='Base path for the best finetuned model.'
+)
+
+parser.add_argument(
     '--results_path',
     type=str,
     default='/local-scratch/nigam/projects/jlemmon/cl-clmbr/experiments/main/artifacts/results/clmbr',
@@ -178,7 +185,6 @@ parser.add_argument(
 # class
 #-------------------------------------------------------------------
 
-# class 
 
 #-------------------------------------------------------------------
 # helper functions
@@ -207,6 +213,8 @@ def load_data(args, clmbr_hp):
 def eval_alignment(args, model, data):
 	align_list = []
 	for i in range(args.iterations):
+		# randomly select batch from raw data
+		# build dataset using batch and iterate through
 		batch = np.random.choice(data, args.batch_size)
 		print(batch)
 		z1 = model(batch)
@@ -266,19 +274,7 @@ def eval_model(args, task, val_dataset, test_dataset, clmbr_hp, cl_hp=None):
 	clmbr_model = ehr_ml.clmbr.CLMBR.from_pretrained(clmbr_model_path, args.device).to(args.device)
 	# set model to train so dropout is activated
 	clmbr_model.train()
-	config = clmbr_model.clmbr_model.config
-	
-	val_loader = DataLoader(val_dataset, config['num_first'], batch_size=config['batch_size'], seed=args.seed, device=args.device)
-	test_loader = DataLoader(test_dataset, config['num_first'], batch_size=configs['batch_size'], seed=args.seed, device=args.device)
-	
-	val_data = []
-	test_data = []
-	
-	for i in range(len(val_loader)):
-		val_data.append(next(val_loader))
-	print(val_data)
-	for i in range(len(test_loader)):
-		test_data.append(next(test_loader))
+	config = clmbr_model.config
 	
 	val_align= eval_alignment(args, clmbr_model, val_data)
 	test_align = eval_alignment(args, clmbr_model, test_data)
@@ -336,11 +332,12 @@ grid = list(
 	)
 )
 
+
 cl_grid = list(
 	ParameterGrid(
 		yaml.load(
 			open(
-				f"{os.path.join(args.hparams_fpath,'cl')}.yml",
+				f"{os.path.join(args.ft_model_fpath,'hyperparams')}.yml",
 				'r'
 			),
 			Loader=yaml.FullLoader
@@ -361,21 +358,21 @@ for task in tasks:
 			clmbr_model_path = f'{args.clmbr_path}/pretrained/models/{args.encoder}_sz_{clmbr_hp["size"]}_do_{clmbr_hp["dropout"]}_cd_{clmbr_hp["code_dropout"]}_dd_{clmbr_hp["day_dropout"]}_lr_{clmbr_hp["lr"]}_l2_{clmbr_hp["l2"]}'
 			val_data, test_data = load_data(args, clmbr_hp)
 
-			val_dataset = PatientTimelineDataset(args.extract_path + '/extract.db', 
-									 args.extract_path + '/ontology.db', 
-									 f'{clmbr_model_path}/info.json', 
-									 val_data, 
-									 val_data )
+# 			val_dataset = PatientTimelineDataset(args.extract_path + '/extract.db', 
+# 									 args.extract_path + '/ontology.db', 
+# 									 f'{clmbr_model_path}/info.json', 
+# 									 val_data, 
+# 									 val_data )
 
-			test_dataset = PatientTimelineDataset(args.extract_path + '/extract.db', 
-							 args.extract_path + '/ontology.db', 
-							 f'{clmbr_model_path}/info.json', 
-							 test_data, 
-							 test_data )
+# 			test_dataset = PatientTimelineDataset(args.extract_path + '/extract.db', 
+# 							 args.extract_path + '/ontology.db', 
+# 							 f'{clmbr_model_path}/info.json', 
+# 							 test_data, 
+# 							 test_data )
 		
-		eval_model(args, task, val_dataset, test_dataset, clmbr_hp)
+		eval_model(args, task, val_data, test_data, clmbr_hp)
 		for j, cl_hp in enumerate(cl_grid):
-			eval_model(args, task, val_dataset, test_dataset, clmbr_hp, cl_hp)
+			eval_model(args, task, val_data, test_data, clmbr_hp, cl_hp)
         
         
         

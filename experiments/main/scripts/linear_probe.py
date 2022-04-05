@@ -46,6 +46,13 @@ parser.add_argument(
 )
 
 parser.add_argument(
+    '--ft_model_path',
+    type=str,
+    default='/local-scratch/nigam/projects/jlemmon/cl-clmbr/experiments/main/artifacts/models/clmbr/contrastive_learn/models/gru_sz_800_do_0.1_cd_0_dd_0_lr_0.001_l2_0.01/best',
+    help='Base path for the best finetuned model.'
+)
+
+parser.add_argument(
     '--probe_path',
     type=str,
     default='/local-scratch/nigam/projects/jlemmon/cl-clmbr/experiments/main/artifacts/models/probes/baseline/models',
@@ -111,15 +118,14 @@ parser.add_argument(
 parser.add_argument(
     '--epochs',
     type=int,
-    default=1,
-	# default=1,
+    default=10,
     help='Number of training epochs.'
 )
 
 parser.add_argument(
     '--n_boot',
     type=int,
-    default=1,
+    default=1000,
     help='Number of bootstrap iterations.'
 )
 
@@ -301,14 +307,10 @@ def train_probe(args, model, dataset, save_path):
 		with torch.no_grad():
 			with DataLoader(dataset, 9262, is_val=True, batch_size=model.config["batch_size"], device=args.device) as val_loader:
 				for batch in val_loader:
-					if (len(batch['pid']) != len(batch['label'][0])):
-						print(batch['pid'])
-						batch['pid'] = batch['pid'][:len(batch['label'][0])] #temp fix
-						
 					logits, labels = model(batch)
 					loss = criterion(logits, labels.unsqueeze(-1))
 					epoch_val_loss += loss.item()
-					val_preds.appendextend(logits.cpu().numpy().flatten())
+					val_preds.extend(logits.cpu().numpy().flatten())
 					val_lbls.extend(labels.cpu().numpy().flatten())
 					val_ids.extend(batch['pid'])
 				# val_losses.append(epoch_val_loss)
@@ -346,7 +348,7 @@ def evaluate_probe(args, model, dataset):
 				logits, labels = model(batch)
 				loss = criterion(logits, labels.unsqueeze(-1))
 				# losses.append(loss.item())
-				preds.appendextend(logits.cpu().numpy().flatten())
+				preds.extend(logits.cpu().numpy().flatten())
 				lbls.extend(labels.cpu().numpy().flatten())
 				ids.extend(batch['pid'])
 	return preds, lbls, ids
@@ -385,17 +387,17 @@ if __name__ == '__main__':
 		)
 	)
 	
-	cl_grid = list(
+	cl_hp = list(
 		ParameterGrid(
 			yaml.load(
 				open(
-					f"{os.path.join(args.hparams_fpath,'cl')}.yml",
+					f"{os.path.join(args.ft_model_path,'hyperparams')}.yml",
 					'r'
 				),
 				Loader=yaml.FullLoader
 			)
 		)
-	)
+	)[0]
 	
 	# Iterate through tasks
 	for task in tasks:
@@ -450,56 +452,51 @@ if __name__ == '__main__':
 			df_eval = calc_metrics(args, df_preds)
 			df_eval['CLMBR'] = 'BL'
 			df_eval['task'] = task
-			print(df_eval)
 			df_eval.to_csv(f'{result_save_path}/eval.csv',index=False)
 
 			#print('Test score')
 			#print(roc_auc_score(test_labels, test_preds)) # need to replace with pred_utils for CI
 			
-			for j, cl_hp in enumerate(cl_grid):
-				print('Training CL-CLMBR probe with params: ', cl_hp)
-				cl_model_path = f"{args.model_path}/{args.encoder}_sz_{clmbr_hp['size']}_do_{clmbr_hp['dropout']}_cd_{clmbr_hp['code_dropout']}_dd_{clmbr_hp['day_dropout']}_lr_{clmbr_hp['lr']}_l2_{clmbr_hp['l2']}/bs_{cl_hp['batch_size']}_lr_{cl_hp['lr']}_temp_{cl_hp['temp']}_pool_{cl_hp['pool']}"
-				
-				# Create probe and result directories
-				probe_save_path = f'{args.probe_path}/{task}/contrastive_learn/{args.encoder}_sz_{clmbr_hp["size"]}_do_{clmbr_hp["dropout"]}_cd_{clmbr_hp["code_dropout"]}_dd_{clmbr_hp["day_dropout"]}_lr_{clmbr_hp["lr"]}_l2_{clmbr_hp["l2"]}/bs_{cl_hp["batch_size"]}_lr_{cl_hp["lr"]}_temp_{cl_hp["temp"]}_pool_{cl_hp["pool"]}'
-				
-				os.makedirs(f"{probe_save_path}",exist_ok=True)
-				
-				result_save_path = f'{args.results_path}/{task}/probes/contrastive_learn/{args.encoder}_sz_{clmbr_hp["size"]}_do_{clmbr_hp["dropout"]}_cd_{clmbr_hp["code_dropout"]}_dd_{clmbr_hp["day_dropout"]}_lr_{clmbr_hp["lr"]}_l2_{clmbr_hp["l2"]}/bs_{cl_hp["batch_size"]}_lr_{cl_hp["lr"]}_temp_{cl_hp["temp"]}_pool_{cl_hp["pool"]}'
-				
-				os.makedirs(f"{result_save_path}",exist_ok=True)
-			
-				# load cl clmbr model
-				cl_model = ehr_ml.clmbr.CLMBR.from_pretrained(clmbr_model_path, args.device).to(args.device)
-				cl_model.freeze()
-				
-				# Get probe model
-				cl_probe_model = LinearProbe(cl_model, clmbr_hp['size'])
+			print('Training CL-CLMBR probe with params: ', cl_hp)
+				# cl_model_path = f"{args.model_path}/{args.encoder}_sz_{clmbr_hp['size']}_do_{clmbr_hp['dropout']}_cd_{clmbr_hp['code_dropout']}_dd_{clmbr_hp['day_dropout']}_lr_{clmbr_hp['lr']}_l2_{clmbr_hp['l2']}/bs_{cl_hp['batch_size']}_lr_{cl_hp['lr']}_temp_{cl_hp['temp']}_pool_{cl_hp['pool']}"
+			cl_model_path = f"{args.ft_model_path}"
+			# Create probe and result directories
+			probe_save_path = f'{args.probe_path}/{task}/contrastive_learn/{args.encoder}_sz_{clmbr_hp["size"]}_do_{clmbr_hp["dropout"]}_cd_{clmbr_hp["code_dropout"]}_dd_{clmbr_hp["day_dropout"]}_lr_{clmbr_hp["lr"]}_l2_{clmbr_hp["l2"]}/bs_{cl_hp["batch_size"]}_lr_{cl_hp["lr"]}_temp_{cl_hp["temp"]}_pool_{cl_hp["pool"]}'
 
-				cl_probe_model.to(args.device)
-				
-				# Train probe and get best model by validation score
-				cl_probe_model, val_preds, val_labels, val_ids = train_probe(args, cl_probe_model, train_dataset,  probe_save_path)
-				# flatten RNN parameters after deep copy
-				#cl_probe_model.clmbr_model.timeline_model.flatten_parameters()
-				
-				val_df = pd.DataFrame({'CLMBR':'baseline', 'model':'linear','task':task, 'phase':'val', 'person_id':val_ids, 'pred_probs':val_preds, 'labels':val_labels})
-				val_df.to_csv(f'{result_save_path}/val_preds.csv',index=False)
-				
-				# Run probe on test set
-				print('Testing probe...')
-				
-				test_preds, test_labels, test_ids = evaluate_probe(args, cl_probe_model, test_dataset)
-				test_df = pd.DataFrame({'CLMBR':'baseline', 'model':'linear', 'task':task, 'phase':'test', 'person_id':test_ids, 'pred_probs':test_preds, 'labels':test_labels})
-				test_df.to_csv(f'{result_save_path}/test_preds.csv',index=False)
-				
-				# create pred prob df and bootstrap metrics
-				df_preds = pd.concat((val_df,test_df))
-				df_eval = calc_metrics(args, df_preds)
-				df_eval['CLMBR'] = 'CL'
-				df_eval['task'] = task
-				print(df_eval)
-				df_eval.to_csv(f'{result_save_path}/eval.csv',index=False)
-				# print('Test score')
-				# print(roc_auc_score(test_labels, test_preds)) # need to replace with pred_utils for CI
-			
+			os.makedirs(f"{probe_save_path}",exist_ok=True)
+
+			result_save_path = f'{args.results_path}/{task}/probes/contrastive_learn/{args.encoder}_sz_{clmbr_hp["size"]}_do_{clmbr_hp["dropout"]}_cd_{clmbr_hp["code_dropout"]}_dd_{clmbr_hp["day_dropout"]}_lr_{clmbr_hp["lr"]}_l2_{clmbr_hp["l2"]}/bs_{cl_hp["batch_size"]}_lr_{cl_hp["lr"]}_temp_{cl_hp["temp"]}_pool_{cl_hp["pool"]}'
+
+			os.makedirs(f"{result_save_path}",exist_ok=True)
+
+			# load cl clmbr model
+			cl_model = ehr_ml.clmbr.CLMBR.from_pretrained(clmbr_model_path, args.device).to(args.device)
+			cl_model.freeze()
+
+			# Get probe model
+			cl_probe_model = LinearProbe(cl_model, clmbr_hp['size'])
+
+			cl_probe_model.to(args.device)
+
+			# Train probe and get best model by validation score
+			cl_probe_model, val_preds, val_labels, val_ids = train_probe(args, cl_probe_model, train_dataset,  probe_save_path)
+
+			val_df = pd.DataFrame({'CLMBR':'baseline', 'model':'linear','task':task, 'phase':'val', 'person_id':val_ids, 'pred_probs':val_preds, 'labels':val_labels})
+			val_df.to_csv(f'{result_save_path}/val_preds.csv',index=False)
+
+			# Run probe on test set
+			print('Testing probe...')
+
+			test_preds, test_labels, test_ids = evaluate_probe(args, cl_probe_model, test_dataset)
+			test_df = pd.DataFrame({'CLMBR':'baseline', 'model':'linear', 'task':task, 'phase':'test', 'person_id':test_ids, 'pred_probs':test_preds, 'labels':test_labels})
+			test_df.to_csv(f'{result_save_path}/test_preds.csv',index=False)
+
+			# create pred prob df and bootstrap metrics
+			df_preds = pd.concat((val_df,test_df))
+			df_eval = calc_metrics(args, df_preds)
+			df_eval['CLMBR'] = 'CL'
+			df_eval['task'] = task
+			print(df_eval)
+			df_eval.to_csv(f'{result_save_path}/eval.csv',index=False)
+			# print('Test score')
+			# print(roc_auc_score(test_labels, test_preds)) # need to replace with pred_utils for CI

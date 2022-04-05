@@ -44,6 +44,13 @@ parser.add_argument(
 )
 
 parser.add_argument(
+    '--ft_model_path',
+    type=str,
+    default='/local-scratch/nigam/projects/jlemmon/cl-clmbr/experiments/main/artifacts/models/clmbr/contrastive_learn/models/gru_sz_800_do_0.1_cd_0_dd_0_lr_0.001_l2_0.01/',
+    help='Base path for the best finetuned model.'
+)
+
+parser.add_argument(
     '--extract_path',
     type=str,
     default='/local-scratch/nigam/projects/jlemmon/cl-clmbr/experiments/main/data/extracts/20210723',
@@ -261,6 +268,7 @@ class ContrastiveLearn(nn.Module):
 		self.config = clmbr_model.config
 		self.linear = MLPLayer(clmbr_model.config["size"])
 		self.pooler = Pooler(pooler, device)
+		self.temp = temp
 		self.sim = Similarity(temp)
 		self.criterion = nn.CrossEntropyLoss()
 		self.device = device if device is not None else 'cuda:0' if torch.cuda.is_available() else 'cpu'
@@ -353,7 +361,9 @@ def finetune(args, model, train_dataset, val_dataset, lr):
 					train_loss.append(loss.item())
 	print('Training loss:',  np.sum(train_loss))
 	val_preds, val_lbls, val_losses = evaluate_model(args, model, val_dataset)
-	return model.clmbr_model
+	scaled_val_loss = np.sum(val_losses)*model.temp
+	print('scaled loss:', scaled_val_loss)
+	return model.clmbr_model, scaled_val_loss
 
 def evaluate_model(args, model, dataset):
 	model.eval()
@@ -369,11 +379,9 @@ def evaluate_model(args, model, dataset):
 				outputs = model(batch)
 				loss = outputs["loss"]
 				losses.append(loss.item())
-				preds.append(list(outputs['preds'].cpu().numpy()))
-				lbls.append(list(outputs['labels'].cpu().numpy()))
+				preds.extend(list(outputs['preds'].cpu().numpy()))
+				lbls.extend(list(outputs['labels'].cpu().numpy()))
 	print('Validation loss:',  np.sum(losses))
-	preds = [i for l in preds for i in l]
-	lbls = [i for l in lbls for i in l]
 	return preds, lbls, losses
 
 if __name__ == '__main__':
@@ -409,7 +417,10 @@ if __name__ == '__main__':
 		
 		clmbr_model_path = f'{args.pt_model_path}/{args.encoder}_sz_{clmbr_hp["size"]}_do_{clmbr_hp["dropout"]}_cd_{clmbr_hp["code_dropout"]}_dd_{clmbr_hp["day_dropout"]}_lr_{clmbr_hp["lr"]}_l2_{clmbr_hp["l2"]}'
 		print(clmbr_model_path)
-		
+		best_ft_path = f"{args.model_path}/{args.encoder}_sz_{clmbr_hp['size']}_do_{clmbr_hp['dropout']}_cd_{clmbr_hp['code_dropout']}_dd_{clmbr_hp['day_dropout']}_lr_{clmbr_hp['lr']}_l2_{clmbr_hp['l2']}/best"
+		os.makedirs(f"{best_ft_path}",exist_ok=True)
+		best_val_loss = 9999999
+		best_params = None
 		for j, cl_hp in enumerate(cl_grid):
 			print('finetuning model with params: ', cl_hp)
 			clmbr_save_path = f"{args.model_path}/{args.encoder}_sz_{clmbr_hp['size']}_do_{clmbr_hp['dropout']}_cd_{clmbr_hp['code_dropout']}_dd_{clmbr_hp['day_dropout']}_lr_{clmbr_hp['lr']}_l2_{clmbr_hp['l2']}/bs_{cl_hp['batch_size']}_lr_{cl_hp['lr']}_temp_{cl_hp['temp']}_pool_{cl_hp['pool']}"
@@ -446,9 +457,20 @@ if __name__ == '__main__':
 			# Run finetune procedure
 			# trainer = Trainer(model)
 			# trainer.train(dataset)
-			clmbr_model = finetune(args, model, train_dataset, val_dataset, float(cl_hp['lr']))
+			clmbr_model, val_loss = finetune(args, model, train_dataset, val_dataset, float(cl_hp['lr']))
 			clmbr_model.freeze()
-	
+			if val_loss < best_val_loss:
+				print('Saving as best finetuned model...')
+				best_val_loss = val_loss
+				best_params = cl_hp
+				
+				torch.save(clmbr_model.state_dict(), os.path.join(best_ft_path,'best'))
+				shutil.copyfile(f'{clmbr_model_path}/info.json', f'{best_ft_path}/info.json')
+				with open(f'{best_ft_path}/config.json', 'w') as f:
+					json.dump(config,f)
+				with open(f"{best_ft_path}/hyperparams.yml", 'w') as file: # fix format of dump
+					yaml.dump(best_params,file)
+				
 			# Save model and save info and config to new model directory for downstream evaluation
 			torch.save(clmbr_model.state_dict(), os.path.join(clmbr_save_path,'best'))
 			shutil.copyfile(f'{clmbr_model_path}/info.json', f'{clmbr_save_path}/info.json')
