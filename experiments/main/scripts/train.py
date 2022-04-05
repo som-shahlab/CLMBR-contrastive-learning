@@ -50,30 +50,44 @@ parser.add_argument(
 )
 
 parser.add_argument(
+    '--train_start_date',
+    type=str,
+    default='2008-01-01',
+    help='Start date of training ids.'
+)
+
+parser.add_argument(
     '--train_end_date',
     type=str,
-    default='2019-06-01',
+    default='2016-12-31',
     help='End date of training ids.'
+)
+
+parser.add_argument(
+    '--val_start_date',
+    type=str,
+    default='2008-01-01',
+    help='Start date of validation ids.'
 )
 
 parser.add_argument(
     '--val_end_date',
     type=str,
-    default='2019-12-31',
+    default='2016-12-31',
     help='End date of validation ids.'
 )
 
 parser.add_argument(
     '--test_start_date',
     type=str,
-    default='2020-01-01',
+    default='2017-01-01',
     help='Start date of test ids.'
 )
 
 parser.add_argument(
     '--test_end_date',
     type=str,
-    default='2020-12-31',
+    default='2021-12-31',
     help='End date of test ids.'
 )
 
@@ -167,6 +181,8 @@ if __name__ == "__main__":
 		f"{info_dir}",
 		f"{train_end_date}",
 		f"{val_end_date}",
+		"--train_start_date", f"{args.train_start_date}",
+		"--val_start_date", f"{args.val_start_date}",
 		"--min_patient_count", args.min_patient_count,
 		"--excluded_patient_file", args.excluded_patient_list,
 		"--seed", f'{args.seed}'

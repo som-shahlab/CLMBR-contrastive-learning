@@ -3,6 +3,7 @@ import json
 import argparse
 import shutil
 import yaml
+import random
 from datetime import datetime
 
 import ehr_ml.timeline
@@ -73,14 +74,14 @@ parser.add_argument(
 parser.add_argument(
     '--train_end_date',
     type=str,
-    default='2015-12-31',
+    default='2016-12-31',
     help='End date of training ids.'
 )
 
 parser.add_argument(
     '--val_end_date',
     type=str,
-    default='2016-07-01',
+    default='2016-12-31',
     help='End date of validation ids.'
 )
 
@@ -232,21 +233,23 @@ class Pooler(nn.Module):
 	"""
 	Pooler module to get the pooled embedding value. [cls] is equivalent to the final hidden layer embedding.
 	"""
-	def __init__(self, pooler):
+	def __init__(self, pooler, device=None):
 		super().__init__()
 		self.pooler = pooler
+		self.device = device if device is not None else 'cuda:0' if torch.cuda.is_available() else 'cpu'
         
-	def forward(self, outputs):
+	def forward(self, embeds, day_indices=None):
 		# Only CLS style pooling for now
 		if self.pooler == 'cls':
-			return outputs[-1]
+			return embeds[-1]
 		elif self.pooler == 'sumcos':
-			return outputs
+			return embeds
 		elif self.pooler == 'rand_day':
-			print(outputs)
-			# generate random day indice list for each patient in batch
-			# pull same day from each positive patient pair
-
+			outputs = torch.tensor([]).to(self.device)
+			for i, e in enumerate(embeds):
+				outputs = torch.concat((outputs, e[day_indices[i]]), 0)
+			outputs = torch.reshape(outputs, (embeds.shape[0], 1, embeds.shape[-1]))
+			return outputs
 
 class ContrastiveLearn(nn.Module):
 	"""
@@ -257,42 +260,38 @@ class ContrastiveLearn(nn.Module):
 		self.clmbr_model = clmbr_model
 		self.config = clmbr_model.config
 		self.linear = MLPLayer(clmbr_model.config["size"])
-		self.pooler = Pooler(pooler)
+		self.pooler = Pooler(pooler, device)
 		self.sim = Similarity(temp)
 		self.criterion = nn.CrossEntropyLoss()
-		self.device = device if device is not None else torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+		self.device = device if device is not None else 'cuda:0' if torch.cuda.is_available() else 'cpu'
 
 	def forward(self, batch, is_train=True):
 		outputs = dict()
-		print(self.config)
-		print(batch['pid'])
+		# print(batch['pid'])
 		# For patient timeline in batch get CLMBR embedding
-		#z1_embeds = [self.clmbr_model.timeline_model(b["rnn"]) for b in batch]
 		z1_embeds = self.clmbr_model.timeline_model(batch["rnn"])
-		print(z1_embeds.shape)
+		# print(z1_embeds.shape)
 		# Run batch through CLMBR again to get different masked embedding for positive pairs
 		z2_embeds = self.clmbr_model.timeline_model(batch["rnn"])
-		#z2_embeds = [self.clmbr_model.timeline_model(b["rnn"]) for b in batch]
-		print(z2_embeds.shape)
+		# print(z2_embeds.shape)
 		# Flatten embeddings
-		z1_flat_embeds = [z1_embed.view((-1, z1_embed.shape[-1])) for z1_embed in z1_embeds]
-		print(z1_flat_embeds.shape)
-		z2_flat_embeds = [z2_embed.view((-1, z2_embed.shape[-1])) for z2_embed in z2_embeds]
-		print(z2_flat_embeds.shape)
+		
+		rand_day_indices = None
+		if self.pooler.pooler == 'rand_day':
+			rand_day_indices = []
+			for di in batch['day_index']:
+				rand_day_indices.append(random.choice(di))
 		# Use pooler to get target embeddings
-		z1_target_embeds = [self.pooler(z1_flat_embed) for z1_flat_embed in z1_flat_embeds]
-		z1_target_embeds = torch.stack(z1_target_embeds)
-		z2_target_embeds = [self.pooler(z2_flat_embed) for z2_flat_embed in z2_flat_embeds]
-		z2_target_embeds = torch.stack(z2_target_embeds)
+		z1_target_embeds = self.pooler(z1_embeds, rand_day_indices)
+		z2_target_embeds = self.pooler(z2_embeds, rand_day_indices)
 
 		# Reshape pooled embeds to BATCH_SIZE X 2 X EMBEDDING_SIZE
 		# First column is z1, second column is z2
 		pooled_embeds = torch.concat((z1_target_embeds, z2_target_embeds), axis=0)
-		pooled_embeds = pooled_embeds.view(len(batch), 2, pooled_embeds.size(-1))
-
-		# If [CLS] pooling used, run pooled embeddings through linear layer
-		if self.pooler.pooler == 'cls':
-			pooled_embeds = self.linear(pooled_embeds)
+		pooled_embeds = pooled_embeds.view(len(batch['pid']), 2, pooled_embeds.size(-1))
+		# print(pooled_embeds.shape)
+		
+		pooled_embeds = self.linear(pooled_embeds)
 		z1, z2 = pooled_embeds[:,0], pooled_embeds[:,1]
 
 		# Get cosine similarity
@@ -303,64 +302,79 @@ class ContrastiveLearn(nn.Module):
 		
 		# Compute loss
 		outputs['loss'] = self.criterion(cos_sim,labels)
-
+		outputs['preds'] = cos_sim
+		outputs['labels'] = labels
 		return outputs
     
 def load_data(args, clmbr_hp):
-    """
-    Load datasets from split csv files.
-    """
-    data_path = f'{args.labelled_fpath}/hospital_mortality/pretrained/{args.encoder}_sz_{clmbr_hp["size"]}_do_{clmbr_hp["dropout"]}_lr_{clmbr_hp["lr"]}_l2_{clmbr_hp["l2"]}'
-    
-    train_pids = pd.read_csv(f'{data_path}/ehr_ml_patient_ids_train.csv')
-    val_pids = pd.read_csv(f'{data_path}/ehr_ml_patient_ids_val.csv')
-    
-    train_days = pd.read_csv(f'{data_path}/day_indices_train.csv')
-    val_days = pd.read_csv(f'{data_path}/day_indices_val.csv')
-    
-    train_labels = pd.read_csv(f'{data_path}/labels_train.csv')
-    val_labels = pd.read_csv(f'{data_path}/labels_val.csv')
-    
-    train_data = (train_labels.to_numpy().flatten(),train_pids.to_numpy().flatten(),train_days.to_numpy().flatten())
-    val_data = (val_labels.to_numpy().flatten(),val_pids.to_numpy().flatten(),val_days.to_numpy().flatten())
-    
-    return train_data, val_data
+	"""
+	Load datasets from split csv files.
+	"""
+
+	data_path = f'{args.labelled_fpath}/hospital_mortality/pretrained/{args.encoder}_sz_{clmbr_hp["size"]}_do_{clmbr_hp["dropout"]}_cd_{clmbr_hp["code_dropout"]}_dd_{clmbr_hp["day_dropout"]}_lr_{clmbr_hp["lr"]}_l2_{clmbr_hp["l2"]}'
+
+	
+	train_pids = pd.read_csv(f'{data_path}/ehr_ml_patient_ids_train.csv')
+	val_pids = pd.read_csv(f'{data_path}/ehr_ml_patient_ids_val.csv')
+
+	train_days = pd.read_csv(f'{data_path}/day_indices_train.csv')
+	val_days = pd.read_csv(f'{data_path}/day_indices_val.csv')
+
+	train_labels = pd.read_csv(f'{data_path}/labels_train.csv')
+	val_labels = pd.read_csv(f'{data_path}/labels_val.csv')
+
+	train_data = (train_labels.to_numpy().flatten(),train_pids.to_numpy().flatten(),train_days.to_numpy().flatten())
+	val_data = (val_labels.to_numpy().flatten(),val_pids.to_numpy().flatten(),val_days.to_numpy().flatten())
+
+	return train_data, val_data
         
-def finetune(args, model, dataset):
+def finetune(args, model, train_dataset, val_dataset, lr):
 	"""
 	Finetune CLMBR model using linear layer.
 	"""
 	model.train()
 	config = model.clmbr_model.config
-	train_loader = DataLoader(dataset, config['num_first'], is_val=False, batch_size=config["batch_size"], seed=args.seed, device=args.device)
-	
-	optimizer = optim.Adam([p for n, p in model.named_parameters() if p.requires_grad], lr=args.lr)
-	criterion = nn.CrossEntropyLoss()
-	num_batches = len(train_loader)
-	print(num_batches)
-	step_train_loss = []
+	optimizer = optim.Adam([p for n, p in model.named_parameters() if p.requires_grad], lr=lr)
+	train_loss = []
 
 	for e in range(args.epochs):
-		batches = []
-		# drop batches with 1 patient
-		for i in range(args.batch_size):
-			batch.append(next(train_loader))
-			
-		optimizer.zero_grad()
-		outputs = model(batch)
-		loss = outputs["loss"]
+		with DataLoader(train_dataset, model.config['num_first'], is_val=False, batch_size=model.config["batch_size"], device=args.device) as train_loader:
+			for batch in train_loader:
+				# Skip batches that only consist of one patient
+				if len(batch['pid']) == 1:
+					continue
+				else:
+					optimizer.zero_grad()
+					outputs = model(batch)
+					loss = outputs["loss"]
 
-		print('train loss', loss)
-		loss.backward()
-		step_train_loss.append(loss.item())
-	
-	# train_loader threads hanging, iterate through batches to terminate
-	# temporary until find reason for number of batches to be so large/find way to terminate threads early
-	print('Terminating data loader threads...')
-	for i, batch in enumerate(train_loader):
-		pass
-
+					loss.backward()
+					optimizer.step()
+					train_loss.append(loss.item())
+	print('Training loss:',  np.sum(train_loss))
+	val_preds, val_lbls, val_losses = evaluate_model(args, model, val_dataset)
 	return model.clmbr_model
+
+def evaluate_model(args, model, dataset):
+	model.eval()
+	
+	criterion = nn.CrossEntropyLoss()
+	
+	preds = []
+	lbls = []
+	losses = []
+	with torch.no_grad():
+		with DataLoader(dataset, model.config['num_first'], is_val=True, batch_size=model.config['batch_size'], seed=args.seed, device=args.device) as eval_loader:
+			for batch in eval_loader:
+				outputs = model(batch)
+				loss = outputs["loss"]
+				losses.append(loss.item())
+				preds.append(list(outputs['preds'].cpu().numpy()))
+				lbls.append(list(outputs['labels'].cpu().numpy()))
+	print('Validation loss:',  np.sum(losses))
+	preds = [i for l in preds for i in l]
+	lbls = [i for l in lbls for i in l]
+	return preds, lbls, losses
 
 if __name__ == '__main__':
     
@@ -372,7 +386,7 @@ if __name__ == '__main__':
 		ParameterGrid(
 			yaml.load(
 				open(
-					f"{os.path.join(args.hparams_fpath,args.encoder)}2.yml",
+					f"{os.path.join(args.hparams_fpath,args.encoder)}-do-best.yml",
 					'r'
 				),
 				Loader=yaml.FullLoader
@@ -384,7 +398,7 @@ if __name__ == '__main__':
 		ParameterGrid(
 			yaml.load(
 				open(
-					f"{os.path.join(args.hparams_fpath,'cl')}2.yml",
+					f"{os.path.join(args.hparams_fpath,'cl')}.yml",
 					'r'
 				),
 				Loader=yaml.FullLoader
@@ -393,19 +407,26 @@ if __name__ == '__main__':
 	)
 	for i, clmbr_hp in enumerate(grid):
 		
-		clmbr_model_path = f'{args.pt_model_path}/{args.encoder}_sz_{clmbr_hp["size"]}_do_{clmbr_hp["dropout"]}_lr_{clmbr_hp["lr"]}_l2_{clmbr_hp["l2"]}'
+		clmbr_model_path = f'{args.pt_model_path}/{args.encoder}_sz_{clmbr_hp["size"]}_do_{clmbr_hp["dropout"]}_cd_{clmbr_hp["code_dropout"]}_dd_{clmbr_hp["day_dropout"]}_lr_{clmbr_hp["lr"]}_l2_{clmbr_hp["l2"]}'
 		print(clmbr_model_path)
 		
 		for j, cl_hp in enumerate(cl_grid):
-			clmbr_save_path = f"{args.model_path}/{args.encoder}_sz_{clmbr_hp['size']}_do_{clmbr_hp['dropout']}_lr_{clmbr_hp['lr']}_l2_{clmbr_hp['l2']}/bs_{cl_hp['batch_size']}_lr_{cl_hp['lr']}_temp_{cl_hp['temp']}_pool_{cl_hp['pool']}"
+			print('finetuning model with params: ', cl_hp)
+			clmbr_save_path = f"{args.model_path}/{args.encoder}_sz_{clmbr_hp['size']}_do_{clmbr_hp['dropout']}_cd_{clmbr_hp['code_dropout']}_dd_{clmbr_hp['day_dropout']}_lr_{clmbr_hp['lr']}_l2_{clmbr_hp['l2']}/bs_{cl_hp['batch_size']}_lr_{cl_hp['lr']}_temp_{cl_hp['temp']}_pool_{cl_hp['pool']}"
 			print(clmbr_save_path)
 			os.makedirs(f"{clmbr_save_path}",exist_ok=True)
 			train_data, val_data = load_data(args, clmbr_hp)
 
-			dataset = PatientTimelineDataset(args.extract_path + '/extract.db', 
+			train_dataset = PatientTimelineDataset(args.extract_path + '/extract.db', 
 											 args.extract_path + '/ontology.db', 
 											 f'{clmbr_model_path}/info.json', 
 											 train_data, 
+											 train_data )
+			
+			val_dataset = PatientTimelineDataset(args.extract_path + '/extract.db', 
+											 args.extract_path + '/ontology.db', 
+											 f'{clmbr_model_path}/info.json', 
+											 val_data, 
 											 val_data )
 
 			clmbr_model = ehr_ml.clmbr.CLMBR.from_pretrained(clmbr_model_path, args.device)
@@ -425,9 +446,9 @@ if __name__ == '__main__':
 			# Run finetune procedure
 			# trainer = Trainer(model)
 			# trainer.train(dataset)
-			clmbr_model = finetune(args, model, dataset)
+			clmbr_model = finetune(args, model, train_dataset, val_dataset, float(cl_hp['lr']))
 			clmbr_model.freeze()
-
+	
 			# Save model and save info and config to new model directory for downstream evaluation
 			torch.save(clmbr_model.state_dict(), os.path.join(clmbr_save_path,'best'))
 			shutil.copyfile(f'{clmbr_model_path}/info.json', f'{clmbr_save_path}/info.json')

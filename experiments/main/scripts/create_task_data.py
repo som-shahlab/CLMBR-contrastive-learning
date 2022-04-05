@@ -71,30 +71,44 @@ parser.add_argument(
 )
 
 parser.add_argument(
+    '--train_start_date',
+    type=str,
+    default='2008-01-01',
+    help='Start date of training ids.'
+)
+
+parser.add_argument(
     '--train_end_date',
     type=str,
-    default='2019-06-01',
+    default='2016-12-31',
     help='End date of training ids.'
+)
+
+parser.add_argument(
+    '--val_start_date',
+    type=str,
+    default='2008-01-01',
+    help='Start date of validation ids.'
 )
 
 parser.add_argument(
     '--val_end_date',
     type=str,
-    default='2019-12-31',
+    default='2016-12-31',
     help='End date of validation ids.'
 )
 
 parser.add_argument(
     '--test_start_date',
     type=str,
-    default='2020-01-01',
+    default='2017-01-01',
     help='Start date of test ids.'
 )
 
 parser.add_argument(
     '--test_end_date',
     type=str,
-    default='2020-12-31',
+    default='2021-12-31',
     help='End date of test ids.'
 )
 
@@ -226,8 +240,10 @@ if __name__ == '__main__':
 			dataset = pd.read_parquet(os.path.join(args.cohort_fpath, "cohort_split.parquet"))
 		else:
 			dataset = pd.read_csv(os.path.join(args.cohort_fpath, "cohort_split.csv"))
-
+		
+		train_start_date = pd.to_datetime(args.train_start_date)
 		train_end_date = pd.to_datetime(args.train_end_date)
+		val_start_date = pd.to_datetime(args.val_start_date)
 		val_end_date = pd.to_datetime(args.val_end_date)
 		test_start_date = pd.to_datetime(args.test_start_date)
 		test_end_date = pd.to_datetime(args.test_end_date)
@@ -260,15 +276,15 @@ if __name__ == '__main__':
 				if fold == 'train':
 					df = dataset.query(f"{task}_fold_id!=['test','val','ignore']")
 					print('train end:', train_end_date)
-					mask = (df['date'] < train_end_date) | (df['date'] == train_end_date)
+					mask = ((df['date'] >= train_start_date) & (df['date'] <= train_end_date))
 				elif fold == 'val':
 					df = dataset.query(f"{task}_fold_id==['val']")
-					print('train end:', train_end_date, 'val end:', val_end_date)
-					mask = (df['date'] > train_end_date) & ((df['date'] < val_end_date) | (df['date'] == val_end_date))
+					print('val start:', val_start_date, 'val end:', val_end_date)
+					mask = ((df['date'] >= val_start_date) & (df['date'] <= val_end_date))
 				else:
 					df = dataset.query(f"{task}_fold_id==['test']")
 					print('test start:', test_start_date, 'test end:', test_end_date)
-					mask = ((df['date'] > test_start_date) | (df['date'] == test_start_date)) & ((df['date'] < test_end_date) | (df['date'] == test_end_date))
+					mask = ((df['date'] >= test_start_date) & (df['date'] <= test_end_date))
 				df = df.loc[mask].reset_index()
 				print(min(df['date']))
 				print(max(df['date']))

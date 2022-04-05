@@ -3,3 +3,4 @@ experiments/main/artifacts/
 clmbr_model/
 .ipynb_checkpoints/
 experiments/main/hyperparams/*2.yml
+experiments/main/debug

@@ -3,6 +3,7 @@ import json
 import argparse
 import shutil
 import yaml
+import copy
 from datetime import datetime
 
 import ehr_ml.timeline
@@ -25,6 +26,7 @@ import torch.optim as optim
 from sklearn.model_selection import ParameterGrid
 from sklearn.metrics import roc_auc_score
 #from torch.utils.data import DataLoader, Dataset
+from prediction_utils.pytorch_utils.metrics import StandardEvaluator
 
 
 parser = argparse.ArgumentParser()
@@ -47,7 +49,14 @@ parser.add_argument(
     '--probe_path',
     type=str,
     default='/local-scratch/nigam/projects/jlemmon/cl-clmbr/experiments/main/artifacts/models/probes/baseline/models',
-    help='Base path for the trained end-to-end model.'
+    help='Base path for the trained probe model.'
+)
+
+parser.add_argument(
+    '--results_path',
+    type=str,
+    default='/local-scratch/nigam/projects/jlemmon/cl-clmbr/experiments/main/artifacts/results',
+    help='Base path for the results.'
 )
 
 parser.add_argument(
@@ -102,8 +111,23 @@ parser.add_argument(
 parser.add_argument(
     '--epochs',
     type=int,
-    default=10,
+    default=1,
+	# default=1,
     help='Number of training epochs.'
+)
+
+parser.add_argument(
+    '--n_boot',
+    type=int,
+    default=1,
+    help='Number of bootstrap iterations.'
+)
+
+parser.add_argument(
+    '--n_jobs',
+    type=int,
+    default=8,
+    help='Number of bootstrap jobs.'
 )
 
 parser.add_argument(
@@ -199,7 +223,7 @@ class LinearProbe(nn.Module):
 		self.clmbr_model.unfreeze()
 
 	
-def load_datasets(args, task, clmbr_hp):
+def load_datasets(args, task, clmbr_hp, clmbr_model_path):
 	"""
 	Load datasets from split csv files.
 	"""
@@ -225,31 +249,42 @@ def load_datasets(args, task, clmbr_hp):
 											 args.extract_path + '/ontology.db', 
 											 f'{clmbr_model_path}/info.json', 
 											 train_data, 
-											 train_data )
-	val_dataset = PatientTimelineDataset(args.extract_path + '/extract.db', 
-										 args.extract_path + '/ontology.db', 
-										 f'{clmbr_model_path}/info.json', 
-										 val_data, 
-										 val_data )
+											 val_data )
+	
 	test_dataset = PatientTimelineDataset(args.extract_path + '/extract.db', 
 										 args.extract_path + '/ontology.db', 
 										 f'{clmbr_model_path}/info.json', 
-										 test_data, 
+										 train_data, 
 										 test_data )
     
-	return train_dataset, val_dataset, test_dataset
+	return train_dataset, test_dataset
 
 
-def train_probe(args, model, dataset):
+def train_probe(args, model, dataset, save_path):
+	"""
+	Train linear classification probe on frozen CLMBR model.
+	At each epoch save model if validation loss was improved.
+	"""
 	model.train()
 	model.freeze_clmbr()
 	optimizer = optim.Adam([p for n, p in model.named_parameters() if p.requires_grad], lr=args.lr)
 	
 	criterion = nn.BCELoss()
 	
+	best_model = None
+	best_val_loss = 9999999
+	best_val_preds = []
+	best_val_lbls = []
+	best_val_ids = []
+	
 	for e in range(args.epochs):
+		val_preds = []
+		val_lbls = []
+		val_ids = []
 		print(f'epoch {e+1}/{args.epochs}')
-		epoch_loss = 0.0
+		epoch_train_loss = 0.0
+		epoch_val_loss = 0.0
+		# Iterate through training data loader
 		with DataLoader(dataset, model.config['num_first'], is_val=False, batch_size=model.config["batch_size"], device=args.device) as train_loader:
 			for batch in train_loader:
 
@@ -259,10 +294,41 @@ def train_probe(args, model, dataset):
 
 				loss.backward()
 				optimizer.step()
-				# print('batch training loss', loss.item())
-				epoch_loss += loss.item()
-		print('epoch loss:', epoch_loss)
-	return model
+				epoch_train_loss += loss.item()
+				
+		# Iterate through validation data loader
+		print(model.config['num_first'])
+		with torch.no_grad():
+			with DataLoader(dataset, 9262, is_val=True, batch_size=model.config["batch_size"], device=args.device) as val_loader:
+				for batch in val_loader:
+					if (len(batch['pid']) != len(batch['label'][0])):
+						print(batch['pid'])
+						batch['pid'] = batch['pid'][:len(batch['label'][0])] #temp fix
+						
+					logits, labels = model(batch)
+					loss = criterion(logits, labels.unsqueeze(-1))
+					epoch_val_loss += loss.item()
+					val_preds.appendextend(logits.cpu().numpy().flatten())
+					val_lbls.extend(labels.cpu().numpy().flatten())
+					val_ids.extend(batch['pid'])
+				# val_losses.append(epoch_val_loss)
+		
+		#print epoch losses
+		print('epoch train loss:', epoch_train_loss)
+		print('epoch val loss:', epoch_val_loss)
+		
+		# save model if validation loss is improved
+		if epoch_val_loss < best_val_loss:
+			print('Saving best model...')
+			best_val_loss = epoch_val_loss
+			best_model = copy.deepcopy(model)
+			torch.save(best_model, f'{save_path}/best_model.pth')
+			
+			# flatten prediction and label arrays
+			best_val_preds = val_preds
+			best_val_lbls = val_lbls
+			best_val_ids = val_ids
+	return best_model, best_val_preds, best_val_lbls, best_val_ids
 
 def evaluate_probe(args, model, dataset):
 	model.eval()
@@ -270,19 +336,34 @@ def evaluate_probe(args, model, dataset):
 	criterion = nn.BCELoss()
 	
 	preds = []
-	labels = []
-	losses = []
+	lbls = []
+	ids = []
 	with torch.no_grad():
 		with DataLoader(dataset, model.config['num_first'], is_val=True, batch_size=model.config['batch_size'], seed=args.seed, device=args.device) as eval_loader:
 			for batch in eval_loader:
+				if (len(batch['pid']) != len(batch['label'][0])):
+					batch['pid'] = batch['pid'][:len(batch['label'][0])] #temp fix
 				logits, labels = model(batch)
 				loss = criterion(logits, labels.unsqueeze(-1))
-				losses.append(loss.item())
-				preds.append(list(logits.cpu().numpy()))
-				labels.append(list(labels.cpu().numpy()))
-	
-	return preds, labels, losses
+				# losses.append(loss.item())
+				preds.appendextend(logits.cpu().numpy().flatten())
+				lbls.extend(labels.cpu().numpy().flatten())
+				ids.extend(batch['pid'])
+	return preds, lbls, ids
 			
+def calc_metrics(args, df):
+	evaluator = StandardEvaluator()
+	eval_ci_df, eval_df = evaluator.bootstrap_evaluate(
+		df,
+		n_boot = args.n_boot,
+		n_jobs = args.n_jobs,
+		strata_vars_eval = ['phase'],
+		strata_vars_boot = ['labels'],
+		patient_id_var='person_id',
+		return_result_df = True
+	)
+	eval_ci_df['model'] = 'probe'
+	return eval_ci_df
 	
 if __name__ == '__main__':
 	args = parser.parse_args()
@@ -291,6 +372,7 @@ if __name__ == '__main__':
 	
 	tasks = ['hospital_mortality', 'LOS_7', 'icu_admission', 'readmission_30']
 	
+	# load best CLMBR model parameter grid
 	grid = list(
 		ParameterGrid(
 			yaml.load(
@@ -303,19 +385,41 @@ if __name__ == '__main__':
 		)
 	)
 	
-	for i, clmbr_hp in enumerate(grid):
+	cl_grid = list(
+		ParameterGrid(
+			yaml.load(
+				open(
+					f"{os.path.join(args.hparams_fpath,'cl')}.yml",
+					'r'
+				),
+				Loader=yaml.FullLoader
+			)
+		)
+	)
+	
+	# Iterate through tasks
+	for task in tasks:
+		print(f'Task {task}')
 		
-		for task in tasks:
-		
+		# Iterate through (singular) CLMBR hyperparam settings
+		for i, clmbr_hp in enumerate(grid):
+			print('Training CLMBR probe with params: ', clmbr_hp)
+			
+			# Path where CLMBR model is saved
 			clmbr_model_path = f'{args.pt_model_path}/{args.encoder}_sz_{clmbr_hp["size"]}_do_{clmbr_hp["dropout"]}_cd_{clmbr_hp["code_dropout"]}_dd_{clmbr_hp["day_dropout"]}_lr_{clmbr_hp["lr"]}_l2_{clmbr_hp["l2"]}'
 			print(clmbr_model_path)
 
+			# Load  datasets
+			train_dataset, test_dataset = load_datasets(args, task, clmbr_hp, clmbr_model_path)
 
-			train_dataset, val_dataset, test_dataset = load_datasets(args, task, clmbr_hp)
-
-			probe_save_path = f'{args.probe_path}/baseline/{args.encoder}_sz_{clmbr_hp["size"]}_do_{clmbr_hp["dropout"]}_cd_{clmbr_hp["code_dropout"]}_dd_{clmbr_hp["day_dropout"]}_lr_{clmbr_hp["lr"]}_l2_{clmbr_hp["l2"]}/{task}'
+			# Path where CLMBR probe will be saved
+			probe_save_path = f'{args.probe_path}/{task}/baseline/{args.encoder}_sz_{clmbr_hp["size"]}_do_{clmbr_hp["dropout"]}_cd_{clmbr_hp["code_dropout"]}_dd_{clmbr_hp["day_dropout"]}_lr_{clmbr_hp["lr"]}_l2_{clmbr_hp["l2"]}'
 			os.makedirs(f"{probe_save_path}",exist_ok=True)
 			
+			result_save_path = f'{args.results_path}/{task}/probes/baseline/{args.encoder}_sz_{clmbr_hp["size"]}_do_{clmbr_hp["dropout"]}_cd_{clmbr_hp["code_dropout"]}_dd_{clmbr_hp["day_dropout"]}_lr_{clmbr_hp["lr"]}_l2_{clmbr_hp["l2"]}'
+			os.makedirs(f"{result_save_path}",exist_ok=True)
+			
+			# Load CLMBR model and attach linear probe
 			clmbr_model = ehr_ml.clmbr.CLMBR.from_pretrained(clmbr_model_path, args.device).to(args.device)
 			clmbr_model.freeze()
 			
@@ -323,19 +427,79 @@ if __name__ == '__main__':
 			
 			probe_model.to(args.device)
 			
-			print('training probe')
+			print('Training probe...')
+			# Train probe and evaluate on validation 
+			probe_model, val_preds, val_labels, val_ids = train_probe(args, probe_model, train_dataset, probe_save_path)
+
+			val_df = pd.DataFrame({'CLMBR':'BL', 'model':'linear', 'task':task, 'phase':'val', 'person_id':val_ids, 'pred_probs':val_preds, 'labels':val_labels})
+			val_df.to_csv(f'{result_save_path}/val_preds.csv',index=False)
+			# print('Validation score')
+			# print(roc_auc_score(val_labels, val_preds)) # need to replace with pred_utils for CI
 			
-			probe_model = train_probe(args, probe_model, train_dataset)
+			print('Testing probe...')
+			test_preds, test_labels, test_ids = evaluate_probe(args, probe_model, test_dataset)
 			
-			print('validating probe')
-			val_preds, val_labels, val_losses = evaluate_probe(args, probe_model, val_dataset)
-			print(val_preds)
-			print(val_losses)
-			print(roc_auc_score(val_preds, val_labels))
+			test_df = pd.DataFrame({'CLMBR':'BL', 'model':'linear', 'task':task, 'phase':'test', 'person_id':test_ids, 'pred_probs':test_preds, 'labels':test_labels})
+			test_df.to_csv(f'{result_save_path}/test_preds.csv',index=False)
+			df_preds = pd.concat((val_df,test_df))
+			df_preds['CLMBR'] = df_preds['CLMBR'].astype(str)
+			df_preds['model'] = df_preds['model'].astype(str)
+			df_preds['task'] = df_preds['task'].astype(str)
+			df_preds['phase'] = df_preds['phase'].astype(str)
+	
+			df_eval = calc_metrics(args, df_preds)
+			df_eval['CLMBR'] = 'BL'
+			df_eval['task'] = task
+			print(df_eval)
+			df_eval.to_csv(f'{result_save_path}/eval.csv',index=False)
+
+			#print('Test score')
+			#print(roc_auc_score(test_labels, test_preds)) # need to replace with pred_utils for CI
 			
-			print('testing probe')
-			test_preds, test_labels, test_losses = evaluate_probe(args, probe_model, test_dataset)
-			print(test_preds)
-			print(test_losses)
+			for j, cl_hp in enumerate(cl_grid):
+				print('Training CL-CLMBR probe with params: ', cl_hp)
+				cl_model_path = f"{args.model_path}/{args.encoder}_sz_{clmbr_hp['size']}_do_{clmbr_hp['dropout']}_cd_{clmbr_hp['code_dropout']}_dd_{clmbr_hp['day_dropout']}_lr_{clmbr_hp['lr']}_l2_{clmbr_hp['l2']}/bs_{cl_hp['batch_size']}_lr_{cl_hp['lr']}_temp_{cl_hp['temp']}_pool_{cl_hp['pool']}"
+				
+				# Create probe and result directories
+				probe_save_path = f'{args.probe_path}/{task}/contrastive_learn/{args.encoder}_sz_{clmbr_hp["size"]}_do_{clmbr_hp["dropout"]}_cd_{clmbr_hp["code_dropout"]}_dd_{clmbr_hp["day_dropout"]}_lr_{clmbr_hp["lr"]}_l2_{clmbr_hp["l2"]}/bs_{cl_hp["batch_size"]}_lr_{cl_hp["lr"]}_temp_{cl_hp["temp"]}_pool_{cl_hp["pool"]}'
+				
+				os.makedirs(f"{probe_save_path}",exist_ok=True)
+				
+				result_save_path = f'{args.results_path}/{task}/probes/contrastive_learn/{args.encoder}_sz_{clmbr_hp["size"]}_do_{clmbr_hp["dropout"]}_cd_{clmbr_hp["code_dropout"]}_dd_{clmbr_hp["day_dropout"]}_lr_{clmbr_hp["lr"]}_l2_{clmbr_hp["l2"]}/bs_{cl_hp["batch_size"]}_lr_{cl_hp["lr"]}_temp_{cl_hp["temp"]}_pool_{cl_hp["pool"]}'
+				
+				os.makedirs(f"{result_save_path}",exist_ok=True)
 			
-			print(roc_auc_score(test_preds, test_labels))
+				# load cl clmbr model
+				cl_model = ehr_ml.clmbr.CLMBR.from_pretrained(clmbr_model_path, args.device).to(args.device)
+				cl_model.freeze()
+				
+				# Get probe model
+				cl_probe_model = LinearProbe(cl_model, clmbr_hp['size'])
+
+				cl_probe_model.to(args.device)
+				
+				# Train probe and get best model by validation score
+				cl_probe_model, val_preds, val_labels, val_ids = train_probe(args, cl_probe_model, train_dataset,  probe_save_path)
+				# flatten RNN parameters after deep copy
+				#cl_probe_model.clmbr_model.timeline_model.flatten_parameters()
+				
+				val_df = pd.DataFrame({'CLMBR':'baseline', 'model':'linear','task':task, 'phase':'val', 'person_id':val_ids, 'pred_probs':val_preds, 'labels':val_labels})
+				val_df.to_csv(f'{result_save_path}/val_preds.csv',index=False)
+				
+				# Run probe on test set
+				print('Testing probe...')
+				
+				test_preds, test_labels, test_ids = evaluate_probe(args, cl_probe_model, test_dataset)
+				test_df = pd.DataFrame({'CLMBR':'baseline', 'model':'linear', 'task':task, 'phase':'test', 'person_id':test_ids, 'pred_probs':test_preds, 'labels':test_labels})
+				test_df.to_csv(f'{result_save_path}/test_preds.csv',index=False)
+				
+				# create pred prob df and bootstrap metrics
+				df_preds = pd.concat((val_df,test_df))
+				df_eval = calc_metrics(args, df_preds)
+				df_eval['CLMBR'] = 'CL'
+				df_eval['task'] = task
+				print(df_eval)
+				df_eval.to_csv(f'{result_save_path}/eval.csv',index=False)
+				# print('Test score')
+				# print(roc_auc_score(test_labels, test_preds)) # need to replace with pred_utils for CI
+			

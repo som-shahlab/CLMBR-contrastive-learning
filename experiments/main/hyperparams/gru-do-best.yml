@@ -5,7 +5,7 @@ encoder_type:
 size:
 - 800
 dropout:
-- 0.2
+- 0.1
 day_dropout:
 - 0
 code_dropout:

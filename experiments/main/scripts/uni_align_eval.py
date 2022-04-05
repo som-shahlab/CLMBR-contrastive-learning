@@ -7,6 +7,7 @@ import pdb
 import re
 import yaml
 import time
+import torch
 
 import pandas as pd
 import numpy as np
@@ -18,7 +19,16 @@ from sklearn.model_selection import ParameterGrid
 #from lightgbm import LGBMClassifier as gbm
 
 from prediction_utils.util import str2bool
-from prediction_utils.model_evaluation import StandardEvaluator
+# from prediction_utils.model_evaluation import StandardEvaluator
+
+import ehr_ml.timeline
+import ehr_ml.ontology
+import ehr_ml.index
+import ehr_ml.labeler
+import ehr_ml.clmbr
+from ehr_ml.clmbr import Trainer
+from ehr_ml.clmbr import PatientTimelineDataset
+from ehr_ml.clmbr.dataset import DataLoader
 
 #------------------------------------
 # Arg parser
@@ -158,6 +168,17 @@ parser.add_argument(
     help = "whether to overwrite existing artifacts",
 )
 
+parser.add_argument(
+    '--device',
+    type=str,
+    default='cuda:0',
+    help='Device to run torch model on.'
+)
+#-------------------------------------------------------------------
+# class
+#-------------------------------------------------------------------
+
+# class 
 
 #-------------------------------------------------------------------
 # helper functions
@@ -229,15 +250,15 @@ def compute_ci(vals, metric,  a=5.0):
 def eval_model(args, task, val_dataset, test_dataset, clmbr_hp, cl_hp=None):
 	
 	if cl_hp:
-		clmbr_model_path = f'{args.clmbr_path}/contrastive_learn/models/{args.encoder}_sz_{clmbr_hp["size"]}_do_{clmbr_hp["dropout"]}_cd_{clmbr_hp["code_dropout"]}_dd_{clmbr_hp["day_dropout"]}_lr_{clmbr_hp["lr"]}_l2_{clmbr_hp["l2"]}/bs_{cl_hp['batch_size']}_lr_{clmbr_hp['lr']}_temp_{cl_hp['temp']}_pool_{cl_hp['pool']}'
+		clmbr_model_path = f'{args.clmbr_path}/contrastive_learn/models/{args.encoder}_sz_{clmbr_hp["size"]}_do_{clmbr_hp["dropout"]}_cd_{clmbr_hp["code_dropout"]}_dd_{clmbr_hp["day_dropout"]}_lr_{clmbr_hp["lr"]}_l2_{clmbr_hp["l2"]}/bs_{cl_hp["batch_size"]}_lr_{clmbr_hp["lr"]}_temp_{cl_hp["temp"]}_pool_{cl_hp["pool"]}'
 	else:
 		clmbr_model_path = f'{args.clmbr_path}/pretrained/models/{args.encoder}_sz_{clmbr_hp["size"]}_do_{clmbr_hp["dropout"]}_cd_{clmbr_hp["code_dropout"]}_dd_{clmbr_hp["day_dropout"]}_lr_{clmbr_hp["lr"]}_l2_{clmbr_hp["l2"]}'
 	
 	
 	if cl_hp:
-		results_save_fpath = f'{args.results_path}/contrastive_learn/{task}/{args.encoder}_sz_{clmbr_hp["size"]}_do_{clmbr_hp["dropout"]}_cd_{clmbr_hp["code_dropout"]}_dd_{clmbr_hp["day_dropout"]}_lr_{clmbr_hp["lr"]}_l2_{clmbr_hp["l2"]}/bs_{cl_hp['batch_size']}_lr_{cl_hp['lr']}_temp_{cl_hp['temp']}_pool_{cl_hp['pool']}'
+		results_save_fpath = f'{args.results_path}/contrastive_learn/{task}/{args.encoder}_sz_{clmbr_hp["size"]}_do_{clmbr_hp["dropout"]}_cd_{clmbr_hp["code_dropout"]}_dd_{clmbr_hp["day_dropout"]}_lr_{clmbr_hp["lr"]}_l2_{clmbr_hp["l2"]}/bs_{cl_hp["batch_size"]}_lr_{clmbr_hp["lr"]}_temp_{cl_hp["temp"]}_pool_{cl_hp["pool"]}'
 	else:
-		results_save_fpath = f'{args.results_path}/pretrained/{task}/{args.encoder}_sz_{clmbr_hp["size"]}_do_{clmbr_hp["dropout"]}_cd_{clmbr_hp["code_dropout"]}_dd_{clmbr_hp["day_dropout"]}_lr_{clmbr_hp["lr"]}_l2_{clmbr_hp["l2"]}
+		results_save_fpath = f'{args.results_path}/pretrained/{task}/{args.encoder}_sz_{clmbr_hp["size"]}_do_{clmbr_hp["dropout"]}_cd_{clmbr_hp["code_dropout"]}_dd_{clmbr_hp["day_dropout"]}_lr_{clmbr_hp["lr"]}_l2_{clmbr_hp["l2"]}'
 		
 		
 	
@@ -247,14 +268,15 @@ def eval_model(args, task, val_dataset, test_dataset, clmbr_hp, cl_hp=None):
 	clmbr_model.train()
 	config = clmbr_model.clmbr_model.config
 	
-	val_loader = DataLoader(val_dataset, config['num_first'], is_val=False, batch_size=args.batch_size, seed=args.seed, device=args.device)
-	test_loader = DataLoader(test_dataset, config['num_first'], is_val=False, batch_size=args.batch_size, seed=args.seed, device=args.device)
+	val_loader = DataLoader(val_dataset, config['num_first'], batch_size=config['batch_size'], seed=args.seed, device=args.device)
+	test_loader = DataLoader(test_dataset, config['num_first'], batch_size=configs['batch_size'], seed=args.seed, device=args.device)
 	
 	val_data = []
 	test_data = []
 	
 	for i in range(len(val_loader)):
 		val_data.append(next(val_loader))
+	print(val_data)
 	for i in range(len(test_loader)):
 		test_data.append(next(test_loader))
 	
@@ -306,7 +328,7 @@ grid = list(
 	ParameterGrid(
 		yaml.load(
 			open(
-				f"{os.path.join(args.hparams_fpath,args.encoder)}.yml",
+				f"{os.path.join(args.hparams_fpath,args.encoder)}-do-best.yml",
 				'r'
 			),
 			Loader=yaml.FullLoader
@@ -330,10 +352,10 @@ val_dataset, test_dataset = None, None
 
 for task in tasks:
     
-    print(f"task: {task}")
+	print(f"task: {task}")
 
-    # Iterate through hyperparam lists
-    for i, clmbr_hp in enumerate(clmbr_grid):
+	# Iterate through hyperparam lists
+	for i, clmbr_hp in enumerate(grid):
 		# all models use same dataset so only load once
 		if i == 0:
 			clmbr_model_path = f'{args.clmbr_path}/pretrained/models/{args.encoder}_sz_{clmbr_hp["size"]}_do_{clmbr_hp["dropout"]}_cd_{clmbr_hp["code_dropout"]}_dd_{clmbr_hp["day_dropout"]}_lr_{clmbr_hp["lr"]}_l2_{clmbr_hp["l2"]}'
@@ -343,16 +365,16 @@ for task in tasks:
 									 args.extract_path + '/ontology.db', 
 									 f'{clmbr_model_path}/info.json', 
 									 val_data, 
-									 val_data ).to(args.device)
+									 val_data )
 
 			test_dataset = PatientTimelineDataset(args.extract_path + '/extract.db', 
 							 args.extract_path + '/ontology.db', 
 							 f'{clmbr_model_path}/info.json', 
 							 test_data, 
-							 test_data ).to(args.device)
+							 test_data )
 		
 		eval_model(args, task, val_dataset, test_dataset, clmbr_hp)
-        for j, cl_hp in enumerate(cl_grid):
+		for j, cl_hp in enumerate(cl_grid):
 			eval_model(args, task, val_dataset, test_dataset, clmbr_hp, cl_hp)
         
         

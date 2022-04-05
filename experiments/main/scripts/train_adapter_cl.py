@@ -332,7 +332,7 @@ clmbr_grid = list(
 	ParameterGrid(
 		yaml.load(
 			open(
-				f"{os.path.join(args.hparams_fpath,args.encoder)}.yml",
+				f"{os.path.join(args.hparams_fpath,args.encoder)}-do-best.yml",
 				'r'
 			),
 			Loader=yaml.FullLoader

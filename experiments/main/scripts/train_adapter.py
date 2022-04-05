@@ -314,19 +314,7 @@ clmbr_grid = list(
 	ParameterGrid(
 		yaml.load(
 			open(
-				f"{os.path.join(args.hparams_fpath,args.encoder)}2.yml",
-				'r'
-			),
-			Loader=yaml.FullLoader
-		)
-	)
-)
-
-cl_grid = list(
-	ParameterGrid(
-		yaml.load(
-			open(
-				f"{os.path.join(args.hparams_fpath,'cl')}.yml",
+				f"{os.path.join(args.hparams_fpath,args.encoder)}-do-best.yml",
 				'r'
 			),
 			Loader=yaml.FullLoader
@@ -341,8 +329,6 @@ for task in tasks:
 	# Iterate through hyperparam lists
 	for i, clmbr_hp in enumerate(clmbr_grid):
 		train_model(args, task, clmbr_hp)
-		# for j, cl_hp in enumerate(cl_grid):
-		# 	train_model(args, task, clmbr_hp, cl_hp)
         
         
         
