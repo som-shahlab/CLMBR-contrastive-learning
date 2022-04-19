@@ -4,6 +4,7 @@ import argparse
 import shutil
 import yaml
 import random
+import copy
 from datetime import datetime
 
 import ehr_ml.timeline
@@ -116,7 +117,7 @@ parser.add_argument(
 parser.add_argument(
     '--epochs',
     type=int,
-    default=1,
+    default=20,
     help='Number of training epochs.'
 )
 
@@ -336,16 +337,17 @@ def load_data(args, clmbr_hp):
 
 	return train_data, val_data
         
-def finetune(args, model, train_dataset, val_dataset, lr):
+def finetune(args, model, train_dataset, val_dataset, lr, clmbr_save_path, clmbr_model_path):
 	"""
 	Finetune CLMBR model using linear layer.
 	"""
 	model.train()
 	config = model.clmbr_model.config
 	optimizer = optim.Adam([p for n, p in model.named_parameters() if p.requires_grad], lr=lr)
-	train_loss = []
-
+	best_val_loss = 9999999
 	for e in range(args.epochs):
+		model.train()
+		train_loss = []
 		with DataLoader(train_dataset, model.config['num_first'], is_val=False, batch_size=model.config["batch_size"], device=args.device) as train_loader:
 			for batch in train_loader:
 				# Skip batches that only consist of one patient
@@ -359,11 +361,19 @@ def finetune(args, model, train_dataset, val_dataset, lr):
 					loss.backward()
 					optimizer.step()
 					train_loss.append(loss.item())
-	print('Training loss:',  np.sum(train_loss))
-	val_preds, val_lbls, val_losses = evaluate_model(args, model, val_dataset)
-	scaled_val_loss = np.sum(val_losses)*model.temp
-	print('scaled loss:', scaled_val_loss)
-	return model.clmbr_model, scaled_val_loss
+		print('Training loss:',  np.sum(train_loss))
+		val_preds, val_lbls, val_losses = evaluate_model(args, model, val_dataset)
+		scaled_val_loss = np.sum(val_losses)*model.temp
+		
+		os.makedirs(f'{clmbr_save_path}/{e}',exist_ok=True)
+		torch.save(clmbr_model.state_dict(), os.path.join(clmbr_save_path,f'{e}/best'))
+		shutil.copyfile(f'{clmbr_model_path}/info.json', f'{clmbr_save_path}/{e}/info.json')
+		with open(f'{clmbr_save_path}/{e}/config.json', 'w') as f:
+			json.dump(config,f)			
+		if scaled_val_loss < best_val_loss:
+			best_val_loss = scaled_val_loss
+			best_model = copy.deepcopy(model.clmbr_model)
+	return best_model, best_val_loss
 
 def evaluate_model(args, model, dataset):
 	model.eval()
@@ -457,7 +467,7 @@ if __name__ == '__main__':
 			# Run finetune procedure
 			# trainer = Trainer(model)
 			# trainer.train(dataset)
-			clmbr_model, val_loss = finetune(args, model, train_dataset, val_dataset, float(cl_hp['lr']))
+			clmbr_model, val_loss = finetune(args, model, train_dataset, val_dataset, float(cl_hp['lr']), clmbr_save_path, clmbr_model_path)
 			clmbr_model.freeze()
 			if val_loss < best_val_loss:
 				print('Saving as best finetuned model...')

@@ -9,14 +9,15 @@ from prediction_utils.util import patient_split_cv
 parser = argparse.ArgumentParser()
 
 parser.add_argument(
-    "--dataset", type=str, default="starr_omop_cdm5_deid_1pcent_lite_latest"
+    "--dataset", type=str, default="starr_omop_cdm5_deid_20210723"
 )
 parser.add_argument("--rs_dataset", type=str, default="temp_dataset")
+parser.add_argument("--et_dataset", type=str, default="jlemmon_explore")
 parser.add_argument("--limit", type=int, default=0)
-parser.add_argument("--gcloud_project", type=str, default="som-nero-phi-nigam-starr")
-parser.add_argument("--dataset_project", type=str, default="som-rit-phi-starr-prod")
+parser.add_argument("--gcloud_project", type=str, default="som-nero-nigam-starr")
+parser.add_argument("--dataset_project", type=str, default="som-nero-nigam-starr")
 parser.add_argument(
-    "--rs_dataset_project", type=str, default="som-nero-phi-nigam-starr"
+    "--rs_dataset_project", type=str, default="som-nero-nigam-starr"
 )
 parser.add_argument("--cohort_name", type=str, default="admission_rollup_temp")
 parser.add_argument(
@@ -53,7 +54,21 @@ parser.add_argument(
 )
 parser.set_defaults(has_birth_datetime=True)
 
+def append_extra_task(args, df, task):
+	# credentials, _ = google.auth.default()
+	query = f'SELECT * FROM {args.dataset_project}.{args.et_dataset}.{task}_cohort'
+	et_cohort_df = pd.read_gbq(query, dialect='standard')
+	pat_ids = list(et_cohort_df['person_id'])
+	df[task] = 0
+	df[task] = cohort[task].mask(cohort.person_id.isin(pat_ids), 1)
+	
+	return df
+
+
 if __name__ == "__main__":
+	
+	extra_tasks = ['sudden_cardiac_death']
+	
     args = parser.parse_args()
     cohort = BQAdmissionRollupCohort(**args.__dict__)
     print(cohort.get_create_query())
@@ -78,6 +93,8 @@ if __name__ == "__main__":
     cohort_df = patient_split_cv(
         cohort_df, patient_col="person_id", test_frac=0.1, nfold=10, seed=657
     )
+	for et in extra_tasks:
+		cohort_df = append_extra_task(args, cohort_df, et)
     cohort_path = os.path.join(args.data_path, "cohort")
     os.makedirs(cohort_path, exist_ok=True)
     cohort_df.to_parquet(

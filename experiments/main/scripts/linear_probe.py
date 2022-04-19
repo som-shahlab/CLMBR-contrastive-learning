@@ -118,7 +118,7 @@ parser.add_argument(
 parser.add_argument(
     '--epochs',
     type=int,
-    default=10,
+    default=20,
     help='Number of training epochs.'
 )
 
@@ -303,7 +303,6 @@ def train_probe(args, model, dataset, save_path):
 				epoch_train_loss += loss.item()
 				
 		# Iterate through validation data loader
-		print(model.config['num_first'])
 		with torch.no_grad():
 			with DataLoader(dataset, 9262, is_val=True, batch_size=model.config["batch_size"], device=args.device) as val_loader:
 				for batch in val_loader:
