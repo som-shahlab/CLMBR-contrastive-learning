@@ -5,3 +5,4 @@ clmbr_model/
 experiments/main/hyperparams/*2.yml
 experiments/main/debug
 *.log
+experiments/main/notebooks/figures/*

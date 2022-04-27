@@ -218,7 +218,7 @@ if __name__ == '__main__':
 
 	np.random.seed(args.seed)
 
-	tasks = ['hospital_mortality', 'LOS_7', 'icu_admission', 'readmission_30']
+	tasks = ['hospital_mortality', 'LOS_7', 'icu_admission', 'readmission_30', 'sudden_cardiac_death', 'stroke', 'bladder_cancer', 'breast_cancer', 'acute_renal_failure', 'acute_myocardial_infarction', 'diabetic_ketoacidosis', 'edema', 'hyperkylemia', 'renal_cancer', 'revascularization']
 
 	grid = list(
 		ParameterGrid(

@@ -28,7 +28,7 @@ parser.add_argument(
     "--tasks",
     nargs='+',
     type=str ,
-    default=['hospital_mortality','LOS_7','readmission_30','icu_admission'],
+    default=['hospital_mortality','LOS_7','readmission_30','icu_admission', 'sudden_cardiac_death', 'stroke', 'bladder_cancer', 'breast_cancer', 'acute_renal_failure', 'acute_myocardial_infarction', 'diabetic_ketoacidosis', 'edema', 'hyperkylemia', 'renal_cancer', 'revascularization'],
     help="regularization parameter C"
 )
 
@@ -55,7 +55,7 @@ def split_cohort_by_year(
         seed,
         patient_col='person_id',
         index_year='admission_year',
-        tasks=['hospital_mortality','LOS_7','readmission_30','icu_admission'],
+        tasks=['hospital_mortality','LOS_7','readmission_30','icu_admission', 'sudden_cardiac_death', 'stroke', 'bladder_cancer', 'breast_cancer', 'acute_renal_failure', 'acute_myocardial_infarction', 'diabetic_ketoacidosis', 'edema', 'hyperkylemia', 'renal_cancer', 'revascularization'],
         val_frac=0.15,
         test_frac=0.15,
         nfold=5

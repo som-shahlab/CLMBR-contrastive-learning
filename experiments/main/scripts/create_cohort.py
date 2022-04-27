@@ -35,7 +35,7 @@ parser.add_argument(
 parser.add_argument(
     "--data_path",
     type=str,
-    default="/share/pi/nigam/projects/spfohl/cohorts/admissions/scratch",
+    default="/local-scratch/nigam/projects/jlemmon/cl-clmbr/experiments/main/data/",
 )
 parser.add_argument(
     "--min_stay_hour",
@@ -60,43 +60,46 @@ def append_extra_task(args, df, task):
 	et_cohort_df = pd.read_gbq(query, dialect='standard')
 	pat_ids = list(et_cohort_df['person_id'])
 	df[task] = 0
-	df[task] = cohort[task].mask(cohort.person_id.isin(pat_ids), 1)
-	
+	df[task] = df[task].mask(df.person_id.isin(pat_ids), 1)
+	print(df)
 	return df
 
 
 if __name__ == "__main__":
 	
-	extra_tasks = ['sudden_cardiac_death']
-	
-    args = parser.parse_args()
-    cohort = BQAdmissionRollupCohort(**args.__dict__)
-    print(cohort.get_create_query())
-    cohort.create_cohort_table()
+	extra_tasks = ['sudden_cardiac_death', 'stroke', 'bladder_cancer', 'breast_cancer', 'acute_renal_failure', 'acute_myocardial_infarction', 'diabetic_ketoacidosis', 'edema', 'hyperkylemia', 'renal_cancer', 'revascularization']
 
-    cohort_labeled = BQAdmissionOutcomeCohort(**args.__dict__)
-    print(cohort_labeled.get_create_query())
-    cohort_labeled.create_cohort_table()
+	args = parser.parse_args()
+	cohort = BQAdmissionRollupCohort(**args.__dict__)
+	print(cohort.get_create_query())
+	cohort.create_cohort_table()
 
-    cohort_filtered = BQFilterInpatientCohort(**args.__dict__)
-    print(cohort_labeled.get_create_query())
-    cohort_filtered.create_cohort_table()
-    cohort_df = pd.read_gbq(
-        """
-            SELECT *
-            FROM `{rs_dataset_project}.{rs_dataset}.{cohort_name_filtered}`
-        """.format(
-            **args.__dict__
-        ),
-        dialect='standard',
-    )
-    cohort_df = patient_split_cv(
-        cohort_df, patient_col="person_id", test_frac=0.1, nfold=10, seed=657
-    )
+	cohort_labeled = BQAdmissionOutcomeCohort(**args.__dict__)
+	print(cohort_labeled.get_create_query())
+	cohort_labeled.create_cohort_table()
+
+	cohort_filtered = BQFilterInpatientCohort(**args.__dict__)
+	print(cohort_labeled.get_create_query())
+	cohort_filtered.create_cohort_table()
+	cohort_df = pd.read_gbq(
+		"""
+			SELECT *
+			FROM `{rs_dataset_project}.{rs_dataset}.{cohort_name_filtered}`
+		""".format(
+			**args.__dict__
+		),
+		dialect='standard',
+	)
+	cohort_df = patient_split_cv(
+		cohort_df, patient_col="person_id", test_frac=0.1, nfold=10, seed=657
+	)
 	for et in extra_tasks:
 		cohort_df = append_extra_task(args, cohort_df, et)
-    cohort_path = os.path.join(args.data_path, "cohort")
-    os.makedirs(cohort_path, exist_ok=True)
-    cohort_df.to_parquet(
-        os.path.join(cohort_path, "cohort.parquet"), engine="pyarrow", index=False,
-    )
+	cohort_df['death_date'] = pd.to_datetime(cohort_df['death_date'])
+	print(cohort_df.dtypes)
+	
+	cohort_path = os.path.join(args.data_path, "cohort")
+	os.makedirs(cohort_path, exist_ok=True)
+	cohort_df.to_parquet(
+		os.path.join(cohort_path, "cohort.parquet"), engine="pyarrow", index=False,
+	)

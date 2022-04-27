@@ -250,8 +250,8 @@ class Pooler(nn.Module):
 		# Only CLS style pooling for now
 		if self.pooler == 'cls':
 			return embeds[-1]
-		elif self.pooler == 'sumcos':
-			return embeds
+		elif self.pooler == 'mean_rep':
+			return torch.mean(embeds,1,True)
 		elif self.pooler == 'rand_day':
 			outputs = torch.tensor([]).to(self.device)
 			for i, e in enumerate(embeds):

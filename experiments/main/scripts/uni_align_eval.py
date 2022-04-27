@@ -424,9 +424,6 @@ joblib.Parallel(n_jobs=args.n_jobs)
 # set seed
 torch.manual_seed(args.seed)
 
-# parse tasks and train_group
-tasks = ['hospital_mortality', 'LOS_7', 'icu_admission', 'readmission_30']
-
 grid = list(
 	ParameterGrid(
 		yaml.load(
