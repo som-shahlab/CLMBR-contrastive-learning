@@ -23,6 +23,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+from torch.utils.tensorboard import SummaryWriter
+writer = SummaryWriter('./runs/cl_ete')
 
 from sklearn.model_selection import ParameterGrid
 #from torch.utils.data import DataLoader, Dataset
@@ -31,24 +33,17 @@ from sklearn.model_selection import ParameterGrid
 parser = argparse.ArgumentParser()
 
 parser.add_argument(
-    '--pt_model_path',
+    '--pt_info_path',
     type=str,
-    default='/local-scratch/nigam/projects/jlemmon/cl-clmbr/experiments/main/artifacts/models/clmbr/pretrained/models',
-    help='Base path for the pretrained model.'
+    default='/local-scratch/nigam/projects/jlemmon/cl-clmbr/experiments/main/artifacts/models/clmbr/pretrained/info',
+    help='Base path for the pretrained model info.'
 )
 
 parser.add_argument(
     '--model_path',
     type=str,
-    default='/local-scratch/nigam/projects/jlemmon/cl-clmbr/experiments/main/artifacts/models/clmbr/contrastive_learn/models',
+    default='/local-scratch/nigam/projects/jlemmon/cl-clmbr/experiments/main/artifacts/models/clmbr/cl_ete/models',
     help='Base path for the trained end-to-end model.'
-)
-
-parser.add_argument(
-    '--ft_model_path',
-    type=str,
-    default='/local-scratch/nigam/projects/jlemmon/cl-clmbr/experiments/main/artifacts/models/clmbr/contrastive_learn/models/gru_sz_800_do_0.1_cd_0_dd_0_lr_0.001_l2_0.01/',
-    help='Base path for the best finetuned model.'
 )
 
 parser.add_argument(
@@ -75,7 +70,7 @@ parser.add_argument(
 parser.add_argument(
     '--labelled_fpath',
     type=str,
-    default="/local-scratch/nigam/projects/jlemmon/cl-clmbr/experiments/main/data/labelled_data",
+    default="/local-scratch/nigam/projects/jlemmon/cl-clmbr/experiments/main/data/labelled_data/hospital_mortality/pretrained/gru_sz_800_do_0.1_cd_0_dd_0_lr_0.001_l2_0.01",
     help='Base path for labelled data directory'
 )
 
@@ -117,7 +112,7 @@ parser.add_argument(
 parser.add_argument(
     '--epochs',
     type=int,
-    default=20,
+    default=200,
     help='Number of training epochs.'
 )
 
@@ -320,7 +315,7 @@ def load_data(args, clmbr_hp):
 	Load datasets from split csv files.
 	"""
 
-	data_path = f'{args.labelled_fpath}/hospital_mortality/pretrained/{args.encoder}_sz_{clmbr_hp["size"]}_do_{clmbr_hp["dropout"]}_cd_{clmbr_hp["code_dropout"]}_dd_{clmbr_hp["day_dropout"]}_lr_{clmbr_hp["lr"]}_l2_{clmbr_hp["l2"]}'
+	data_path = f'{args.labelled_fpath}'
 
 	
 	train_pids = pd.read_csv(f'{data_path}/ehr_ml_patient_ids_train.csv')
@@ -337,12 +332,13 @@ def load_data(args, clmbr_hp):
 
 	return train_data, val_data
         
-def finetune(args, model, train_dataset, val_dataset, lr, clmbr_save_path, clmbr_model_path):
+def train(args, model, train_dataset, val_dataset, lr, clmbr_save_path, clmbr_info_path, bl_int, cl_int):
 	"""
-	Finetune CLMBR model using linear layer.
+	Train CLMBR model using CL objective.
 	"""
 	model.train()
-	config = model.clmbr_model.config
+	# config = model.clmbr_model.config
+	config = model.config
 	optimizer = optim.Adam([p for n, p in model.named_parameters() if p.requires_grad], lr=lr)
 	best_val_loss = 9999999
 	for e in range(args.epochs):
@@ -362,12 +358,14 @@ def finetune(args, model, train_dataset, val_dataset, lr, clmbr_save_path, clmbr
 					optimizer.step()
 					train_loss.append(loss.item())
 		print('Training loss:',  np.sum(train_loss))
+		writer.add_scalar(f'{bl_int}-{cl_int}/Loss/train', np.sum(train_loss), e)
 		val_preds, val_lbls, val_losses = evaluate_model(args, model, val_dataset)
 		scaled_val_loss = np.sum(val_losses)*model.temp
+		writer.add_scalar('{bl_int}-{cl_int}/Loss/val', scaled_val_loss, e)
 		
 		os.makedirs(f'{clmbr_save_path}/{e}',exist_ok=True)
 		torch.save(clmbr_model.state_dict(), os.path.join(clmbr_save_path,f'{e}/best'))
-		shutil.copyfile(f'{clmbr_model_path}/info.json', f'{clmbr_save_path}/{e}/info.json')
+		shutil.copyfile(f'{clmbr_info_path}', f'{clmbr_save_path}/{e}/info.json')
 		with open(f'{clmbr_save_path}/{e}/config.json', 'w') as f:
 			json.dump(config,f)			
 		if scaled_val_loss < best_val_loss:
@@ -394,6 +392,28 @@ def evaluate_model(args, model, dataset):
 	print('Validation loss:',  np.sum(losses))
 	return preds, lbls, losses
 
+def get_config(hp):
+    config = {'b1': 0.9,
+            'b2': 0.999,
+            'batch_size': hp['batch_size'],
+            'code_dropout': hp['code_dropout'],
+            'day_dropout': hp['day_dropout'],
+            'dropout': hp['dropout'],
+            'e': 1e-08,
+            'encoder_type': hp['encoder_type'],
+            'epochs_per_cycle': 1,
+            'eval_batch_size': hp['batch_size'],
+            'l2': hp['l2'],
+            'lr': hp['lr'],
+            'model_dir': '',
+            'num_first': 9262,
+            'num_second': 10044,
+            'rnn_layers': 1,
+            'size': hp['size'],
+            'tied_weights': True,
+            'warmup_epochs': hp['warmup_epochs']}
+    return config
+
 if __name__ == '__main__':
     
 	args = parser.parse_args()
@@ -404,7 +424,7 @@ if __name__ == '__main__':
 		ParameterGrid(
 			yaml.load(
 				open(
-					f"{os.path.join(args.hparams_fpath,args.encoder)}-do-best.yml",
+					f"{os.path.join(args.hparams_fpath,args.encoder)}.yml",
 					'r'
 				),
 				Loader=yaml.FullLoader
@@ -416,7 +436,7 @@ if __name__ == '__main__':
 		ParameterGrid(
 			yaml.load(
 				open(
-					f"{os.path.join(args.hparams_fpath,'cl')}.yml",
+					f"{os.path.join(args.hparams_fpath,'cl-ete')}.yml",
 					'r'
 				),
 				Loader=yaml.FullLoader
@@ -424,38 +444,39 @@ if __name__ == '__main__':
 		)
 	)
 	for i, clmbr_hp in enumerate(grid):
-		
-		clmbr_model_path = f'{args.pt_model_path}/{args.encoder}_sz_{clmbr_hp["size"]}_do_{clmbr_hp["dropout"]}_cd_{clmbr_hp["code_dropout"]}_dd_{clmbr_hp["day_dropout"]}_lr_{clmbr_hp["lr"]}_l2_{clmbr_hp["l2"]}'
-		print(clmbr_model_path)
-		os.makedirs(f"{best_ft_path}",exist_ok=True)
+		print('Initialized CLMBR model with params: ', clmbr_hp)
+		clmbr_info_path = f'{args.pt_info_path}/info.json'
+		with open(clmbr_info_path) as f:
+			info = json.load(f)
+		config = get_config(clmbr_hp)
 		best_val_loss = 9999999
 		best_params = None
 		for j, cl_hp in enumerate(cl_grid):
-			print('finetuning model with params: ', cl_hp)
-			clmbr_save_path = f"{args.model_path}/{args.encoder}_sz_{clmbr_hp['size']}_do_{clmbr_hp['dropout']}_cd_{clmbr_hp['code_dropout']}_dd_{clmbr_hp['day_dropout']}_lr_{clmbr_hp['lr']}_l2_{clmbr_hp['l2']}/bs_{cl_hp['batch_size']}_lr_{cl_hp['lr']}_temp_{cl_hp['temp']}_pool_{cl_hp['pool']}"
-			best_ft_path = f"{args.model_path}/{args.encoder}_sz_{clmbr_hp['size']}_do_{clmbr_hp['dropout']}_cd_{clmbr_hp['code_dropout']}_dd_{clmbr_hp['day_dropout']}_lr_{clmbr_hp['lr']}_l2_{clmbr_hp['l2']}/best_{cl_hp['pool']}"
+			print('Training model with CL params: ', cl_hp)
+			config["batch_size"] = cl_hp['batch_size']
+			bl_model_str = f"{args.encoder}_sz_{clmbr_hp['size']}_do_{clmbr_hp['dropout']}_cd_{clmbr_hp['code_dropout']}_dd_{clmbr_hp['day_dropout']}_lr_{clmbr_hp['lr']}_l2_{clmbr_hp['l2']}"
+			cl_model_str = f"bs_{cl_hp['batch_size']}_lr_{cl_hp['lr']}_temp_{cl_hp['temp']}_pool_{cl_hp['pool']}"
+			clmbr_save_path = f"{args.model_path}/{bl_model_str}_{cl_model_str}"
 			print(clmbr_save_path)
 			os.makedirs(f"{clmbr_save_path}",exist_ok=True)
 			train_data, val_data = load_data(args, clmbr_hp)
 
 			train_dataset = PatientTimelineDataset(args.extract_path + '/extract.db', 
 											 args.extract_path + '/ontology.db', 
-											 f'{clmbr_model_path}/info.json', 
+											 clmbr_info_path, 
 											 train_data, 
 											 train_data )
 			
 			val_dataset = PatientTimelineDataset(args.extract_path + '/extract.db', 
 											 args.extract_path + '/ontology.db', 
-											 f'{clmbr_model_path}/info.json', 
+											 clmbr_info_path, 
 											 val_data, 
 											 val_data )
-
-			clmbr_model = ehr_ml.clmbr.CLMBR.from_pretrained(clmbr_model_path, args.device)
+			config["model_dir"] = clmbr_save_path
+			clmbr_model = ehr_ml.clmbr.CLMBR(config, info).to(torch.device(args.device))
 			# Modify CLMBR config settings
-			clmbr_model.config["model_dir"] = clmbr_save_path
-			clmbr_model.config["batch_size"] = cl_hp['batch_size']
-			clmbr_model.config["epochs_per_cycle"] = args.epochs
-			clmbr_model.config["warmup_epochs"] = 1
+			
+			# clmbr_model.config["epochs_per_cycle"] = args.epochs
 
 			config = clmbr_model.config
 
@@ -465,26 +486,28 @@ if __name__ == '__main__':
 			model.train()
 
 			# Run finetune procedure
-			# trainer = Trainer(model)
-			# trainer.train(dataset)
-			clmbr_model, val_loss = finetune(args, model, train_dataset, val_dataset, float(cl_hp['lr']), clmbr_save_path, clmbr_model_path)
+			clmbr_model, val_loss = train(args, model, train_dataset, val_dataset, float(cl_hp['lr']), clmbr_save_path, clmbr_info_path, i, j)
+			writer.flush()
 			clmbr_model.freeze()
 			if val_loss < best_val_loss:
-				print('Saving as best finetuned model...')
+				print('Saving as best trained model...')
 				best_val_loss = val_loss
 				best_params = cl_hp
+				best_path = os.path.join(args.model_path,'best')
+				os.makedirs(f"{best_path}",exist_ok=True)
 				
-				torch.save(clmbr_model.state_dict(), os.path.join(best_ft_path,'best'))
-				shutil.copyfile(f'{clmbr_model_path}/info.json', f'{best_ft_path}/info.json')
-				with open(f'{best_ft_path}/config.json', 'w') as f:
+				torch.save(clmbr_model.state_dict(), f'{best_path}/best')
+				shutil.copyfile(clmbr_info_path, f'{best_path}/info.json')
+				with open(f'{best_path}/config.json', 'w') as f:
 					json.dump(config,f)
-				with open(f"{best_ft_path}/hyperparams.yml", 'w') as file: # fix format of dump
+				with open(f"{best_path}/hyperparams.yml", 'w') as file: # fix format of dump
 					yaml.dump(best_params,file)
 				
 			# Save model and save info and config to new model directory for downstream evaluation
 			torch.save(clmbr_model.state_dict(), os.path.join(clmbr_save_path,'best'))
-			shutil.copyfile(f'{clmbr_model_path}/info.json', f'{clmbr_save_path}/info.json')
+			shutil.copyfile(f'{clmbr_info_path}', f'{clmbr_save_path}/info.json')
 			with open(f'{clmbr_save_path}/config.json', 'w') as f:
 				json.dump(config,f)
+writer.close()
         
     

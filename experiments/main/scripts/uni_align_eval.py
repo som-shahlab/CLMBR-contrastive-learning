@@ -1,4 +1,5 @@
 import os
+import math
 import shutil
 import argparse
 import pickle
@@ -128,7 +129,7 @@ parser.add_argument(
 parser.add_argument(
     '--batch_size',
     type=int,
-    default=256,
+    default=100,
     help='Size of representation vector.'
 )
 
@@ -170,7 +171,7 @@ parser.add_argument(
 parser.add_argument(
     "--iterations",
     type=int,
-    default=1000,
+    default=2000,
     help="number of iterations to do when evaluating metrics"
 )
 
@@ -225,6 +226,8 @@ class Pooler(nn.Module):
 		# Only CLS style pooling for now
 		if self.pooler == 'cls':
 			return embeds[-1]
+		elif self.pooler == 'mean_rep':
+			return torch.mean(embeds,1,True)
 		elif self.pooler == 'rand_day':
 			outputs = torch.tensor([]).to(self.device)
 			for i, e in enumerate(embeds):
@@ -322,14 +325,14 @@ def eval_alignment(args, model, data, clmbr_hp):
 	align_list = []
 	for i in range(args.iterations):
 		dataset = get_sample(args, data, clmbr_hp)
-		with DataLoader(dataset, model.config['num_first'], is_val=True, batch_size=99999, seed=args.seed, device=args.device) as loader:
-			for batch in loader:
+		with DataLoader(dataset, model.config['num_first'], is_val=True, batch_size=999999, seed=args.seed, device=args.device) as loader:
+			for j, batch in enumerate(loader):
 				outputs = model(batch)
 		
 				z1 =outputs['z1']
 				z2 = outputs['z2']
 				align = alignment(z1, z2)
-				# print(align)
+
 				align_list.append(align.item())
 	return np.array(align_list)
 
@@ -337,7 +340,7 @@ def eval_uniform(args, model, data, clmbr_hp):
 	uniform_list = []
 	for i in range(args.iterations):
 		dataset = get_sample(args, data, clmbr_hp)
-		with DataLoader(dataset, model.config['num_first'], is_val=True, batch_size=99999, seed=args.seed, device=args.device) as loader:
+		with DataLoader(dataset, model.config['num_first'], is_val=True, batch_size=999999, seed=args.seed, device=args.device) as loader:
 			for batch in loader:
 				outputs = model(batch)
 				z1 = outputs['z1']
@@ -354,15 +357,21 @@ def uniformity(x, t=2):
 
 def compute_ci(vals, metric,  ci=0.95):
 	
-	mean, sem, m = np.mean(vals), ss.sem(vals), ss.t.ppf((1+ci)/2., len(vals)-1)
-	
-	lower, med, upper = mean - m*sem, mean, mean + m*sem
-	# print(lower, med, upper)
+	vals.sort()
+	low_idx = int((1-ci)/2 * len(vals))-1
+
+	up_idx = int((1+ci)/2 * len(vals))-1
+	lower = vals[low_idx]
+	upper = vals[up_idx]
+	if len(vals) % 2 == 0:
+		med = (vals[int(len(vals)/2-1)] + vals[int(len(vals)/2)])/2
+	else:
+		med = vals[int(math.floor(len(vals)/2))]
 	df = pd.DataFrame({'metric':metric, 'lower_ci':lower, 'med_ci':med, 'upper_ci':upper}, index=[0])
 	
 	return df
 
-def eval_model(args, val_dataset, test_dataset, clmbr_hp, cl_hp=None):
+def eval_model(args, val_dataset, test_dataset, clmbr_hp, cl_hp=None, pooler='BL'):
 	
 	if cl_hp:
 		clmbr_model_path = f'{args.clmbr_path}/contrastive_learn/models/{args.encoder}_sz_{clmbr_hp["size"]}_do_{clmbr_hp["dropout"]}_cd_{clmbr_hp["code_dropout"]}_dd_{clmbr_hp["day_dropout"]}_lr_{clmbr_hp["lr"]}_l2_{clmbr_hp["l2"]}/best'
@@ -384,31 +393,35 @@ def eval_model(args, val_dataset, test_dataset, clmbr_hp, cl_hp=None):
 	mw = MetricWrapper(clmbr_model, args.pooler, args.device)
 	
 	val_align= eval_alignment(args, mw, val_data, clmbr_hp)
+	pd.DataFrame(val_align).reset_index(drop=True).to_csv(f'{results_save_path}/val_align_vals.csv')
 	test_align = eval_alignment(args, mw, test_data, clmbr_hp)
-	
+	pd.DataFrame(test_align).reset_index(drop=True).to_csv(f'{results_save_path}/test_align_vals.csv')
+	clmbr_model.eval()
 	val_uniform = eval_uniform(args, mw, val_data, clmbr_hp)
+	pd.DataFrame(val_uniform).reset_index(drop=True).to_csv(f'{results_save_path}/val_uniform_vals.csv')
 	test_uniform = eval_uniform(args, mw, test_data, clmbr_hp)
+	pd.DataFrame(test_uniform).reset_index(drop=True).to_csv(f'{results_save_path}/test_uniform_vals.csv')
 	
 	ci_df = pd.DataFrame()
 	
 	df = compute_ci(val_align, 'alignment')
 	df['split'] = 'val'
-	df['CLMBR'] = 'CL' if cl_hp else 'BL'
+	df['CLMBR'] = pooler
 	ci_df = pd.concat([ci_df,df])
 	
 	df = compute_ci(val_uniform, 'uniformity')
 	df['split'] = 'val'
-	df['CLMBR'] = 'CL' if cl_hp else 'BL'
+	df['CLMBR'] = pooler
 	ci_df = pd.concat([ci_df,df])
 	
 	df = compute_ci(test_align, 'alignment')
 	df['split'] = 'test'
-	df['CLMBR'] = 'CL' if cl_hp else 'BL'
+	df['CLMBR'] = pooler
 	ci_df = pd.concat([ci_df,df])
 	
 	df = compute_ci(test_uniform, 'uniformity')
 	df['split'] = 'test'
-	df['CLMBR'] = 'CL' if cl_hp else 'BL'
+	df['CLMBR'] = pooler
 	ci_df = pd.concat([ci_df,df])
 	print(ci_df)
 	ci_df.reset_index(drop=True).to_csv(f'{results_save_path}/uni_align_eval.csv')
@@ -437,7 +450,19 @@ grid = list(
 )
 
 
-cl_grid = list(
+rd_grid = list(
+    ParameterGrid(
+        yaml.load(
+            open(
+                f"{os.path.join('/local-scratch/nigam/projects/jlemmon/cl-clmbr/experiments/main/artifacts/models/clmbr/contrastive_learn/models/gru_sz_800_do_0.1_cd_0_dd_0_lr_0.001_l2_0.01/best_rand_day','hyperparams')}.yml",
+                'r'
+            ),
+            Loader=yaml.FullLoader
+        )
+    )
+)
+
+mr_grid = list(
     ParameterGrid(
         yaml.load(
             open(
@@ -449,20 +474,15 @@ cl_grid = list(
     )
 )
 
-val_dataset, test_dataset = None, None
+val_data, test_data = load_data(args, grid[0])
 
 
-
-# Iterate through hyperparam lists
-for i, clmbr_hp in enumerate(grid):
-	# all models use same dataset so only load once
-	if i == 0:
-		val_data, test_data = load_data(args, clmbr_hp)
-	print('BL')
-	eval_model(args, val_data, test_data, clmbr_hp)
-	for j, cl_hp in enumerate(cl_grid):
-		print('CL')
-		eval_model(args, val_data, test_data, clmbr_hp, cl_hp)
+print('BL')
+eval_model(args, val_data, test_data, grid[0])
+print('Random day CL')
+eval_model(args, val_data, test_data, grid[0], rd_grid[0], 'RD')
+print('Mean Representation CL')
+eval_model(args, val_data, test_data, grid[0], mr_grid[0], 'MR')
         
         
         
