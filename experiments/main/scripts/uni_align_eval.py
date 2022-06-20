@@ -129,8 +129,8 @@ parser.add_argument(
 parser.add_argument(
     '--batch_size',
     type=int,
-    default=100,
-    help='Size of representation vector.'
+    default=512,
+    help='Number of patients in batch'
 )
 
 parser.add_argument(
@@ -265,12 +265,6 @@ class MetricWrapper(nn.Module):
 		# Use pooler to get target embeddings
 		z1_target_embeds = self.pooler(z1_embeds, rand_day_indices)
 		z2_target_embeds = self.pooler(z2_embeds, rand_day_indices)
-
-		# Reshape pooled embeds to BATCH_SIZE X 2 X EMBEDDING_SIZE
-		# First column is z1, second column is z2
-		# pooled_embeds = torch.concat((z1_target_embeds, z2_target_embeds), axis=0)
-		# pooled_embeds = pooled_embeds.view(len(batch['pid']), 2, pooled_embeds.size(-1))
-		# print(pooled_embeds.shape)
 		
 		# pooled_embeds = self.linear(pooled_embeds)
 		z1 = self.linear(z1_target_embeds)
@@ -374,13 +368,19 @@ def compute_ci(vals, metric,  ci=0.95):
 def eval_model(args, val_dataset, test_dataset, clmbr_hp, cl_hp=None, pooler='BL'):
 	
 	if cl_hp:
-		clmbr_model_path = f'{args.clmbr_path}/contrastive_learn/models/{args.encoder}_sz_{clmbr_hp["size"]}_do_{clmbr_hp["dropout"]}_cd_{clmbr_hp["code_dropout"]}_dd_{clmbr_hp["day_dropout"]}_lr_{clmbr_hp["lr"]}_l2_{clmbr_hp["l2"]}/best'
+		if pooler == 'CL-REP':
+			clmbr_model_path = f'{args.clmbr_path}/cl_ete/models/best'
+		else:
+			clmbr_model_path = f'{args.clmbr_path}/contrastive_learn/models/{args.encoder}_sz_{clmbr_hp["size"]}_do_{clmbr_hp["dropout"]}_cd_{clmbr_hp["code_dropout"]}_dd_{clmbr_hp["day_dropout"]}_lr_{clmbr_hp["lr"]}_l2_{clmbr_hp["l2"]}/best'
 	else:
 		clmbr_model_path = f'{args.clmbr_path}/pretrained/models/{args.encoder}_sz_{clmbr_hp["size"]}_do_{clmbr_hp["dropout"]}_cd_{clmbr_hp["code_dropout"]}_dd_{clmbr_hp["day_dropout"]}_lr_{clmbr_hp["lr"]}_l2_{clmbr_hp["l2"]}'
 	
 	
 	if cl_hp:
-		results_save_path = f'{args.results_path}/contrastive_learn/{args.encoder}_sz_{clmbr_hp["size"]}_do_{clmbr_hp["dropout"]}_cd_{clmbr_hp["code_dropout"]}_dd_{clmbr_hp["day_dropout"]}_lr_{clmbr_hp["lr"]}_l2_{clmbr_hp["l2"]}/bs_{cl_hp["batch_size"]}_lr_{clmbr_hp["lr"]}_temp_{cl_hp["temp"]}_pool_{cl_hp["pool"]}'
+		if pooler == 'CL-REP':
+			results_save_path = f'{args.results_path}/cl_rep/best'
+		else:	
+			results_save_path = f'{args.results_path}/contrastive_learn/{args.encoder}_sz_{clmbr_hp["size"]}_do_{clmbr_hp["dropout"]}_cd_{clmbr_hp["code_dropout"]}_dd_{clmbr_hp["day_dropout"]}_lr_{clmbr_hp["lr"]}_l2_{clmbr_hp["l2"]}/bs_{cl_hp["batch_size"]}_lr_{clmbr_hp["lr"]}_temp_{cl_hp["temp"]}_pool_{cl_hp["pool"]}'
 	else:
 		results_save_path = f'{args.results_path}/pretrained/{args.encoder}_sz_{clmbr_hp["size"]}_do_{clmbr_hp["dropout"]}_cd_{clmbr_hp["code_dropout"]}_dd_{clmbr_hp["day_dropout"]}_lr_{clmbr_hp["lr"]}_l2_{clmbr_hp["l2"]}'
 	os.makedirs(f'{results_save_path}',exist_ok=True)
@@ -466,7 +466,31 @@ mr_grid = list(
     ParameterGrid(
         yaml.load(
             open(
-                f"{os.path.join('/local-scratch/nigam/projects/jlemmon/cl-clmbr/experiments/main/artifacts/models/clmbr/contrastive_learn/models/gru_sz_800_do_0.1_cd_0_dd_0_lr_0.001_l2_0.01/best','hyperparams')}.yml",
+                f"{os.path.join('/local-scratch/nigam/projects/jlemmon/cl-clmbr/experiments/main/artifacts/models/clmbr/contrastive_learn/models/gru_sz_800_do_0.1_cd_0_dd_0_lr_0.001_l2_0.01/best_mean_rep','hyperparams')}.yml",
+                'r'
+            ),
+            Loader=yaml.FullLoader
+        )
+    )
+)
+
+dp_grid = list(
+    ParameterGrid(
+        yaml.load(
+            open(
+                f"{os.path.join('/local-scratch/nigam/projects/jlemmon/cl-clmbr/experiments/main/artifacts/models/clmbr/contrastive_learn/models/gru_sz_800_do_0.1_cd_0_dd_0_lr_0.001_l2_0.01/best_diff_pat','hyperparams')}.yml",
+                'r'
+            ),
+            Loader=yaml.FullLoader
+        )
+    )
+)
+
+cl_rep_grid = list(
+    ParameterGrid(
+        yaml.load(
+            open(
+                f"{os.path.join('/local-scratch/nigam/projects/jlemmon/cl-clmbr/experiments/main/artifacts/models/clmbr/cl_ete/models/best','hyperparams')}.yml",
                 'r'
             ),
             Loader=yaml.FullLoader
@@ -477,12 +501,16 @@ mr_grid = list(
 val_data, test_data = load_data(args, grid[0])
 
 
-print('BL')
-eval_model(args, val_data, test_data, grid[0])
-print('Random day CL')
-eval_model(args, val_data, test_data, grid[0], rd_grid[0], 'RD')
-print('Mean Representation CL')
-eval_model(args, val_data, test_data, grid[0], mr_grid[0], 'MR')
+# print('BL')
+# eval_model(args, val_data, test_data, grid[0])
+# print('Random day CL')
+# eval_model(args, val_data, test_data, grid[0], rd_grid[0], 'RD')
+# print('Mean Representation CL')
+# eval_model(args, val_data, test_data, grid[0], mr_grid[0], 'MR')
+print('Different Patient CL')
+eval_model(args, val_data, test_data, grid[0], dp_grid[0], 'DP')
+print('CL Representation')
+eval_model(args, val_data, test_data, grid[0], cl_rep_grid[0], 'CL-REP')
         
         
         

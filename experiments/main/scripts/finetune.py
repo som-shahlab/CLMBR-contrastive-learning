@@ -258,6 +258,16 @@ class Pooler(nn.Module):
 				outputs = torch.concat((outputs, e[day_indices[i]]), 0)
 			outputs = torch.reshape(outputs, (embeds.shape[0], 1, embeds.shape[-1]))
 			return outputs
+		elif self.pooler == 'diff_pat':
+			z1_out = torch.tensor([]).to(self.device)
+			z2_out = torch.tensor([]).to(self.device)
+			
+			for i, e in enumerate(embeds):
+				z1_out = torch.concat((z1_out, e[0]), 0)
+				z2_out = torch.concat((z2_out, e[-1]), 0)
+			z1_out = torch.reshape(z1_out, (embeds.shape[0], 1, embeds.shape[-1]))
+			z2_out = torch.reshape(z2_out, (embeds.shape[0], 1, embeds.shape[-1]))
+			return z1_out, z2_out
 
 class ContrastiveLearn(nn.Module):
 	"""
@@ -290,9 +300,13 @@ class ContrastiveLearn(nn.Module):
 			rand_day_indices = []
 			for di in batch['day_index']:
 				rand_day_indices.append(random.choice(di))
+		
 		# Use pooler to get target embeddings
-		z1_target_embeds = self.pooler(z1_embeds, rand_day_indices)
-		z2_target_embeds = self.pooler(z2_embeds, rand_day_indices)
+		if self.pooler.pooler == 'diff_pat':
+			z1_target_embeds, z2_target_embeds = self.pooler(z1_embeds) 
+		else:
+			z1_target_embeds = self.pooler(z1_embeds, rand_day_indices)
+			z2_target_embeds = self.pooler(z2_embeds, rand_day_indices)
 
 		# Reshape pooled embeds to BATCH_SIZE X 2 X EMBEDDING_SIZE
 		# First column is z1, second column is z2
@@ -427,7 +441,6 @@ if __name__ == '__main__':
 		
 		clmbr_model_path = f'{args.pt_model_path}/{args.encoder}_sz_{clmbr_hp["size"]}_do_{clmbr_hp["dropout"]}_cd_{clmbr_hp["code_dropout"]}_dd_{clmbr_hp["day_dropout"]}_lr_{clmbr_hp["lr"]}_l2_{clmbr_hp["l2"]}'
 		print(clmbr_model_path)
-		os.makedirs(f"{best_ft_path}",exist_ok=True)
 		best_val_loss = 9999999
 		best_params = None
 		for j, cl_hp in enumerate(cl_grid):
@@ -435,6 +448,7 @@ if __name__ == '__main__':
 			clmbr_save_path = f"{args.model_path}/{args.encoder}_sz_{clmbr_hp['size']}_do_{clmbr_hp['dropout']}_cd_{clmbr_hp['code_dropout']}_dd_{clmbr_hp['day_dropout']}_lr_{clmbr_hp['lr']}_l2_{clmbr_hp['l2']}/bs_{cl_hp['batch_size']}_lr_{cl_hp['lr']}_temp_{cl_hp['temp']}_pool_{cl_hp['pool']}"
 			best_ft_path = f"{args.model_path}/{args.encoder}_sz_{clmbr_hp['size']}_do_{clmbr_hp['dropout']}_cd_{clmbr_hp['code_dropout']}_dd_{clmbr_hp['day_dropout']}_lr_{clmbr_hp['lr']}_l2_{clmbr_hp['l2']}/best_{cl_hp['pool']}"
 			print(clmbr_save_path)
+			os.makedirs(f"{best_ft_path}",exist_ok=True)
 			os.makedirs(f"{clmbr_save_path}",exist_ok=True)
 			train_data, val_data = load_data(args, clmbr_hp)
 

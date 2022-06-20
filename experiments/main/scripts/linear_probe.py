@@ -53,6 +53,20 @@ parser.add_argument(
 )
 
 parser.add_argument(
+    '--cl_rep_best_path',
+    type=str,
+    default='/local-scratch/nigam/projects/jlemmon/cl-clmbr/experiments/main/artifacts/models/clmbr/cl_ete/models/best',
+    help='Base path for the best contrastively trained model.'
+)
+
+parser.add_argument(
+    '--cl_rep_model_path',
+    type=str,
+    default='/local-scratch/nigam/projects/jlemmon/cl-clmbr/experiments/main/artifacts/models/clmbr/cl_ete/models',
+    help='Base path for the trained end-to-end model.'
+)
+
+parser.add_argument(
     '--probe_path',
     type=str,
     default='/local-scratch/nigam/projects/jlemmon/cl-clmbr/experiments/main/artifacts/models/probes/baseline/models',
@@ -398,11 +412,35 @@ if __name__ == '__main__':
 		)
 	)[0]
 	
+	dp_hp = list(
+		ParameterGrid(
+			yaml.load(
+				open(
+					f"{os.path.join(args.ft_model_path + '_' + 'diff_pat','hyperparams')}.yml",
+					'r'
+				),
+				Loader=yaml.FullLoader
+			)
+		)
+	)[0]
+	
 	mr_hp = list(
 		ParameterGrid(
 			yaml.load(
 				open(
 					f"{os.path.join(args.ft_model_path,'hyperparams')}.yml",
+					'r'
+				),
+				Loader=yaml.FullLoader
+			)
+		)
+	)[0]
+	
+	cl_rep_hp = list(
+		ParameterGrid(
+			yaml.load(
+				open(
+					f"{os.path.join(args.cl_rep_best_path,'hyperparams')}.yml",
 					'r'
 				),
 				Loader=yaml.FullLoader
@@ -426,7 +464,7 @@ if __name__ == '__main__':
 		# Load  datasets
 		train_dataset, test_dataset = load_datasets(args, task, bl_hp, clmbr_model_path)
 
-		# Path where CLMBR probe will be saved
+# 		# Path where CLMBR probe will be saved
 		probe_save_path = f'{args.probe_path}/{task}/baseline/{bl_model_str}'
 		os.makedirs(f"{probe_save_path}",exist_ok=True)
 			
@@ -464,10 +502,10 @@ if __name__ == '__main__':
 		df_eval['task'] = task
 		df_eval.to_csv(f'{result_save_path}/eval.csv',index=False)
 		
-		for cl_hp in [rd_hp, mr_hp]:
+		for cl_hp in [dp_hp, rd_hp, mr_hp]:
 			print('Training CL-CLMBR probe with params: ', cl_hp)
 			cl_model_str = f'bs_{cl_hp["batch_size"]}_lr_{cl_hp["lr"]}_temp_{cl_hp["temp"]}_pool_{cl_hp["pool"]}'
-			cl_model_path = f"{args.ft_model_path}" + "" if cl_hp['pool'] == 'mean_rep' else '_rand_day'
+			cl_model_path = f"{args.ft_model_path}" + "" if cl_hp['pool'] == 'mean_rep' else '_' + cl_hp['pool']
 			# Create probe and result directories
 			probe_save_path = f'{args.probe_path}/{task}/contrastive_learn/{bl_model_str}/{cl_model_str}'
 
@@ -488,23 +526,74 @@ if __name__ == '__main__':
 
 			# Train probe and get best model by validation score
 			cl_probe_model, val_preds, val_labels, val_ids = train_probe(args, cl_probe_model, train_dataset,  probe_save_path)
-
-			val_df = pd.DataFrame({'CLMBR':f'CL-' + 'MR' if cl_hp['pool'] == 'mean_rep' else 'RD', 'model':'linear','task':task, 'phase':'val', 'person_id':val_ids, 'pred_probs':val_preds, 'labels':val_labels})
+			cl_str = 'CL-'
+			if cl_hp['pool'] == 'mean_rep':
+				cl_str += 'MR'
+			elif cl_hp['pool'] == 'rand_day':
+				cl_str += 'RD'
+			elif cl_hp['pool'] == 'diff_pat':
+				cl_str += 'DP'
+			val_df = pd.DataFrame({'CLMBR':cl_str, 'model':'linear','task':task, 'phase':'val', 'person_id':val_ids, 'pred_probs':val_preds, 'labels':val_labels})
 			val_df.to_csv(f'{result_save_path}/val_preds.csv',index=False)
 
 			# Run probe on test set
 			print('Testing probe...')
 
 			test_preds, test_labels, test_ids = evaluate_probe(args, cl_probe_model, test_dataset)
-			test_df = pd.DataFrame({'CLMBR':f'CL-' + 'MR' if cl_hp['pool'] == 'mean_rep' else 'RD', 'model':'linear', 'task':task, 'phase':'test', 'person_id':test_ids, 'pred_probs':test_preds, 'labels':test_labels})
+			test_df = pd.DataFrame({'CLMBR':cl_str, 'model':'linear', 'task':task, 'phase':'test', 'person_id':test_ids, 'pred_probs':test_preds, 'labels':test_labels})
 			test_df.to_csv(f'{result_save_path}/test_preds.csv',index=False)
 
 			# create pred prob df and bootstrap metrics
 			df_preds = pd.concat((val_df,test_df))
 			df_eval = calc_metrics(args, df_preds)
-			df_eval['CLMBR'] = 'CL-' + 'MR' if cl_hp['pool'] == 'mean_rep' else 'RD'
+			df_eval['CLMBR'] = cl_str
 			df_eval['task'] = task
 			print(df_eval)
 			df_eval.to_csv(f'{result_save_path}/eval.csv',index=False)
-			# print('Test score')
-			# print(roc_auc_score(test_labels, test_preds)) # need to replace with pred_utils for CI
+
+		
+		print('Training CL Representation probe with params: ', cl_rep_hp)
+			
+		# Path where CLMBR model is saved
+		cl_model_str = f'gru_sz_800_do_0.1_cd_0_dd_0_lr_0.01_l2_0.1_bs_2000_lr_5e-5_temp_0.01_pool_mean_rep'
+		clmbr_model_path = f'{args.cl_rep_best_path}'
+		print(clmbr_model_path)
+
+
+		# Path where CLMBR probe will be saved
+		probe_save_path = f'{args.probe_path}/{task}/cl_rep/{cl_model_str}'
+		os.makedirs(f"{probe_save_path}",exist_ok=True)
+			
+		result_save_path = f'{args.results_path}/{task}/probes/cl_rep/{cl_model_str}'
+		os.makedirs(f"{result_save_path}",exist_ok=True)
+			
+		# Load CLMBR model and attach linear probe
+		clmbr_model = ehr_ml.clmbr.CLMBR.from_pretrained(clmbr_model_path, args.device).to(args.device)
+		clmbr_model.freeze()
+
+		probe_model = LinearProbe(clmbr_model, bl_hp['size'])
+
+		probe_model.to(args.device)
+
+		print('Training probe...')
+		# Train probe and evaluate on validation 
+		probe_model, val_preds, val_labels, val_ids = train_probe(args, probe_model, train_dataset, probe_save_path)
+
+		val_df = pd.DataFrame({'CLMBR':'CL_REP', 'model':'linear', 'task':task, 'phase':'val', 'person_id':val_ids, 'pred_probs':val_preds, 'labels':val_labels})
+		val_df.to_csv(f'{result_save_path}/val_preds.csv',index=False)
+
+		print('Testing probe...')
+		test_preds, test_labels, test_ids = evaluate_probe(args, probe_model, test_dataset)
+
+		test_df = pd.DataFrame({'CLMBR':'CL_REP', 'model':'linear', 'task':task, 'phase':'test', 'person_id':test_ids, 'pred_probs':test_preds, 'labels':test_labels})
+		test_df.to_csv(f'{result_save_path}/test_preds.csv',index=False)
+		df_preds = pd.concat((val_df,test_df))
+		df_preds['CLMBR'] = df_preds['CLMBR'].astype(str)
+		df_preds['model'] = df_preds['model'].astype(str)
+		df_preds['task'] = df_preds['task'].astype(str)
+		df_preds['phase'] = df_preds['phase'].astype(str)
+
+		df_eval = calc_metrics(args, df_preds)
+		df_eval['CLMBR'] = 'CL_REP'
+		df_eval['task'] = task
+		df_eval.to_csv(f'{result_save_path}/eval.csv',index=False)

@@ -58,10 +58,12 @@ def append_extra_task(args, df, task):
 	# credentials, _ = google.auth.default()
 	query = f'SELECT * FROM {args.dataset_project}.{args.et_dataset}.{task}_cohort'
 	et_cohort_df = pd.read_gbq(query, dialect='standard')
-	pat_ids = list(et_cohort_df['person_id'])
+	temp_df = df.merge(et_cohort_df, on='person_id', how='inner')
+	temp_df['start_date'] = pd.to_datetime(temp_df['start_date'], format='%Y-%m-%d')
+	temp_df = temp_df.loc[temp_df.start_date > temp_df.admit_date]
+	pat_ids = list(temp_df['person_id'])
 	df[task] = 0
 	df[task] = df[task].mask(df.person_id.isin(pat_ids), 1)
-	print(df)
 	return df
 
 

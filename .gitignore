@@ -8,3 +8,4 @@ experiments/main/debug
 experiments/main/notebooks/figures
 experiments/main/scripts/runs
 *.tfevents.*
+experiments/main/scripts/__pycache__
