@@ -261,12 +261,17 @@ class Pooler(nn.Module):
 		elif self.pooler == 'diff_pat':
 			z1_out = torch.tensor([]).to(self.device)
 			z2_out = torch.tensor([]).to(self.device)
-			
+			skipped = 0
 			for i, e in enumerate(embeds):
-				z1_out = torch.concat((z1_out, e[0]), 0)
-				z2_out = torch.concat((z2_out, e[-1]), 0)
-			z1_out = torch.reshape(z1_out, (embeds.shape[0], 1, embeds.shape[-1]))
-			z2_out = torch.reshape(z2_out, (embeds.shape[0], 1, embeds.shape[-1]))
+				if e.shape[0] < 4:
+					skipped += 1
+				else:
+					z1_ind = np.random.randint(1, e.shape[0]-2)
+					z2_ind = np.random.randint(z1_ind+1, e.shape[0]-1)
+					z1_out = torch.concat((z1_out, e[z1_ind]), 0)
+					z2_out = torch.concat((z2_out, e[z2_ind]), 0)
+			z1_out = torch.reshape(z1_out, (embeds.shape[0]-skipped, 1, embeds.shape[-1]))
+			z2_out = torch.reshape(z2_out, (embeds.shape[0]-skipped, 1, embeds.shape[-1]))
 			return z1_out, z2_out
 
 class ContrastiveLearn(nn.Module):
@@ -307,11 +312,16 @@ class ContrastiveLearn(nn.Module):
 		else:
 			z1_target_embeds = self.pooler(z1_embeds, rand_day_indices)
 			z2_target_embeds = self.pooler(z2_embeds, rand_day_indices)
+		
 
+			  
 		# Reshape pooled embeds to BATCH_SIZE X 2 X EMBEDDING_SIZE
 		# First column is z1, second column is z2
-		pooled_embeds = torch.concat((z1_target_embeds, z2_target_embeds), axis=0)
-		pooled_embeds = pooled_embeds.view(len(batch['pid']), 2, pooled_embeds.size(-1))
+		if len(z1_target_embeds) == 0:
+			pooled_embeds = torch.zeros((1,2,800)).to(self.device)
+		else:
+			pooled_embeds = torch.concat((z1_target_embeds, z2_target_embeds), axis=0)
+			pooled_embeds = pooled_embeds.view(len(z1_target_embeds), 2, pooled_embeds.size(-1))
 		# print(pooled_embeds.shape)
 		
 		pooled_embeds = self.linear(pooled_embeds)
@@ -359,6 +369,7 @@ def finetune(args, model, train_dataset, val_dataset, lr, clmbr_save_path, clmbr
 	config = model.clmbr_model.config
 	optimizer = optim.Adam([p for n, p in model.named_parameters() if p.requires_grad], lr=lr)
 	best_val_loss = 9999999
+	val_output_df = pd.DataFrame({'epoch':[],'preds':[],'labels':[]})
 	for e in range(args.epochs):
 		model.train()
 		train_loss = []
@@ -378,16 +389,19 @@ def finetune(args, model, train_dataset, val_dataset, lr, clmbr_save_path, clmbr
 		print('Training loss:',  np.sum(train_loss))
 		val_preds, val_lbls, val_losses = evaluate_model(args, model, val_dataset)
 		scaled_val_loss = np.sum(val_losses)*model.temp
-		
+		df = pd.DataFrame({'epoch':e,'preds':val_preds,'labels':val_lbls})
+		val_output_df = pd.concat((val_output_df,df),axis=0)
 		os.makedirs(f'{clmbr_save_path}/{e}',exist_ok=True)
 		torch.save(clmbr_model.state_dict(), os.path.join(clmbr_save_path,f'{e}/best'))
 		shutil.copyfile(f'{clmbr_model_path}/info.json', f'{clmbr_save_path}/{e}/info.json')
+		
 		with open(f'{clmbr_save_path}/{e}/config.json', 'w') as f:
 			json.dump(config,f)			
 		if scaled_val_loss < best_val_loss:
 			best_val_loss = scaled_val_loss
 			best_model = copy.deepcopy(model.clmbr_model)
-	return best_model, best_val_loss
+	val_output_df.to_csv(f'{clmbr_save_path}/val_preds.csv', index=False)
+	return best_model, best_val_loss, val_output_df
 
 def evaluate_model(args, model, dataset):
 	model.eval()
@@ -481,7 +495,7 @@ if __name__ == '__main__':
 			# Run finetune procedure
 			# trainer = Trainer(model)
 			# trainer.train(dataset)
-			clmbr_model, val_loss = finetune(args, model, train_dataset, val_dataset, float(cl_hp['lr']), clmbr_save_path, clmbr_model_path)
+			clmbr_model, val_loss, val_df = finetune(args, model, train_dataset, val_dataset, float(cl_hp['lr']), clmbr_save_path, clmbr_model_path)
 			clmbr_model.freeze()
 			if val_loss < best_val_loss:
 				print('Saving as best finetuned model...')
@@ -494,7 +508,7 @@ if __name__ == '__main__':
 					json.dump(config,f)
 				with open(f"{best_ft_path}/hyperparams.yml", 'w') as file: # fix format of dump
 					yaml.dump(best_params,file)
-				
+				val_df.to_csv(f'{best_ft_path}/val_preds.csv', index=False)
 			# Save model and save info and config to new model directory for downstream evaluation
 			torch.save(clmbr_model.state_dict(), os.path.join(clmbr_save_path,'best'))
 			shutil.copyfile(f'{clmbr_model_path}/info.json', f'{clmbr_save_path}/info.json')

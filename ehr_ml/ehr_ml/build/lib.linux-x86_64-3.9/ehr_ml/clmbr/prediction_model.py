@@ -37,8 +37,11 @@ class CLMBR(nn.Module):
 		super().__init__()
 		self.config = config
 		self.info = info
-		if config['ocp'] == 1:
-			self.timeline_model = PatientRNN_OCP(config, info)
+		if 'ocp' in config.keys(): # for CLMBR models made before OCP implementation
+			if config['ocp'] == 1:
+				self.timeline_model = PatientRNN_OCP(config, info)
+			else:
+				self.timeline_model = PatientRNN(config, info)
 		else:
 			self.timeline_model = PatientRNN(config, info)
 		if for_labeler:

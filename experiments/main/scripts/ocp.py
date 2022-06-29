@@ -328,15 +328,17 @@ def train(args, model, train_data, val_data, windows, lr, clmbr_save_path, clmbr
 	config = model.config
 	optimizer = optim.Adam([p for n, p in model.named_parameters() if p.requires_grad], lr=lr)
 	best_val_loss = 9999999
-	# timelines = ehr_ml.timeline.TimelineReader('/local-scratch/nigam/projects/jlemmon/cl-clmbr/experiments/main/data/extracts/20210723/extract.db')
-	for e in range(args.epochs):
-		model.train()
-		train_loss = []
-		train_dataset = PatientTimelineDataset(args.extract_path + '/extract.db', 
+	train_dataset = PatientTimelineDataset(args.extract_path + '/extract.db', 
 										 args.extract_path + '/ontology.db', 
 										 f'{clmbr_info_path}', 
 										 train_data, 
 										 val_data )
+	val_output_df = pd.DataFrame({'epoch':[],'preds':[],'labels':[]})
+	# timelines = ehr_ml.timeline.TimelineReader('/local-scratch/nigam/projects/jlemmon/cl-clmbr/experiments/main/data/extracts/20210723/extract.db')
+	for e in range(args.epochs):
+		model.train()
+		train_loss = []
+		
 		with DataLoader(train_dataset, model.config['num_first'], is_val=False, batch_size=1, seed=args.seed, device=args.device) as train_loader:
 			for batch in train_loader:
 					 
@@ -358,6 +360,8 @@ def train(args, model, train_data, val_data, windows, lr, clmbr_save_path, clmbr
 	# 		writer.add_scalar(f'{hp_int}/Loss/train', np.sum(train_loss), e)
 		val_preds, val_lbls, val_losses = evaluate_model(args, model, val_data, windows)
 		val_loss = np.sum(val_losses)
+		df = pd.DataFrame({'epoch':e,'preds':val_preds,'labels':val_lbls})
+		val_output_df = pd.concat((val_output_df,df),axis=0)
 	# 		writer.add_scalar('{hp_int}/Loss/val', scaled_val_loss, e)
 
 		os.makedirs(f'{clmbr_save_path}/{e}',exist_ok=True)
@@ -370,7 +374,8 @@ def train(args, model, train_data, val_data, windows, lr, clmbr_save_path, clmbr
 			best_model = copy.deepcopy(model.clmbr_model)
 		print('Epoch train loss', np.sum(train_loss))
 		print('Epoch val loss', val_loss)
-	return best_model, best_val_loss
+	val_output_df.to_csv(f'{clmbr_save_path}/val_preds.csv', index=False)
+	return best_model, best_val_loss, val_output_df
 
 def evaluate_model(args, model, data, windows):
 	model.eval()
@@ -487,7 +492,7 @@ if __name__ == '__main__':
 		model.train()
 
 		# Run finetune procedure
-		clmbr_model, val_loss = train(args, model, train_data, val_data, windows, float(hp['lr']), clmbr_save_path, clmbr_info_path, i)
+		clmbr_model, val_loss, val_df = train(args, model, train_data, val_data, windows, float(hp['lr']), clmbr_save_path, clmbr_info_path, i)
 		writer.flush()
 		clmbr_model.freeze()
 		if val_loss < best_val_loss:
@@ -503,7 +508,7 @@ if __name__ == '__main__':
 				json.dump(config,f)
 			with open(f"{best_path}/hyperparams.yml", 'w') as file: # fix format of dump
 				yaml.dump(best_params,file)
-
+			val_df.to_csv(f'{best_path}/val_preds.csv', index=False)
 		# Save model and save info and config to new model directory for downstream evaluation
 		torch.save(clmbr_model.state_dict(), os.path.join(clmbr_save_path,'best'))
 		shutil.copyfile(f'{clmbr_info_path}', f'{clmbr_save_path}/info.json')

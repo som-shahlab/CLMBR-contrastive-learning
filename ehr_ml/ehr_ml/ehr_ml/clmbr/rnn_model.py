@@ -423,8 +423,7 @@ class PatientRNN_OCP(nn.Module):
 				d_inner=2048,
 				dropout=config["dropout"],
 			)
-
-	def forward(self, rnn_input, windows):
+	def forward(self, rnn_input, windows=None):
 		(
 			all_non_text_codes,
 			all_non_text_offsets,
@@ -472,9 +471,12 @@ class PatientRNN_OCP(nn.Module):
 			combined_with_day_information.narrow(0, offset, length)
 			for offset, length in all_lengths
 		]
-		pairs, labels = get_window_pairs(codes_split_by_patient, windows)
-		# print(pairs)
-		packed_sequence = nn.utils.rnn.pack_sequence(pairs, enforce_sorted=False)
+		if windows == None:
+			labels = None
+			packed_sequence = nn.utils.rnn.pack_sequence(codes_split_by_patient)
+		else:
+			pairs, labels = get_window_pairs(codes_split_by_patient, windows)
+			packed_sequence = nn.utils.rnn.pack_sequence(pairs, enforce_sorted=False)
 
 		if self.recurrent:
 			output, _ = self.model(packed_sequence)

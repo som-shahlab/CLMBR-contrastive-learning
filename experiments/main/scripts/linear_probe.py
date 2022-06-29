@@ -63,7 +63,21 @@ parser.add_argument(
     '--cl_rep_model_path',
     type=str,
     default='/local-scratch/nigam/projects/jlemmon/cl-clmbr/experiments/main/artifacts/models/clmbr/cl_ete/models',
-    help='Base path for the trained end-to-end model.'
+    help='Base path for the trained CL rep model.'
+)
+
+parser.add_argument(
+    '--ocp_best_path',
+    type=str,
+    default='/local-scratch/nigam/projects/jlemmon/cl-clmbr/experiments/main/artifacts/models/clmbr/ocp/models/best',
+    help='Base path for the best contrastively trained OCP model.'
+)
+
+parser.add_argument(
+    '--ocp_model_path',
+    type=str,
+    default='/local-scratch/nigam/projects/jlemmon/cl-clmbr/experiments/main/artifacts/models/clmbr/ocp/models',
+    help='Base path for the trained OCP model.'
 )
 
 parser.add_argument(
@@ -215,10 +229,11 @@ parser.add_argument(
 
 
 class LinearProbe(nn.Module):
-	def __init__(self, clmbr_model, size, device='cuda:0'):
+	def __init__(self, clmbr_model, size, device='cuda:0', is_ocp=False):
 		super().__init__()
 		self.clmbr_model = clmbr_model
 		self.config = clmbr_model.config
+		self.is_ocp = is_ocp
 		
 		self.dense = nn.Linear(size,1)
 		self.activation = nn.Sigmoid()
@@ -226,7 +241,11 @@ class LinearProbe(nn.Module):
 		self.device = torch.device(device)
 	
 	def forward(self, batch):
-		features = self.clmbr_model.timeline_model(batch['rnn']).to(self.device)
+		if self.is_ocp:
+			features = self.clmbr_model.timeline_model(batch['rnn'])[0].to(self.device)
+		else:
+			features = self.clmbr_model.timeline_model(batch['rnn']).to(self.device)
+
 		label_indices, label_values = batch['label']
 		
 		flat_features = features.view((-1, features.shape[-1]))
@@ -384,7 +403,6 @@ if __name__ == '__main__':
 	args = parser.parse_args()
 	
 	torch.manual_seed(args.seed)
-	
 	tasks = ['hospital_mortality', 'LOS_7', 'icu_admission', 'readmission_30', 'sudden_cardiac_death', 'stroke', 'bladder_cancer', 'breast_cancer', 'acute_renal_failure', 'acute_myocardial_infarction', 'diabetic_ketoacidosis', 'edema', 'hyperkylemia', 'renal_cancer', 'revascularization']
 	
 	# load best CLMBR model parameter grid
@@ -448,6 +466,18 @@ if __name__ == '__main__':
 		)
 	)[0]
 	
+	ocp_hp = list(
+		ParameterGrid(
+			yaml.load(
+				open(
+					f"{os.path.join(args.ocp_best_path,'hyperparams')}.yml",
+					'r'
+				),
+				Loader=yaml.FullLoader
+			)
+		)
+	)[0]
+	
 	# Iterate through tasks
 	for task in tasks:
 		print(f'Task {task}')
@@ -456,12 +486,12 @@ if __name__ == '__main__':
 	
 		print('Training BL CLMBR probe with params: ', bl_hp)
 			
-		# Path where CLMBR model is saved
+# 		# Path where CLMBR model is saved
 		bl_model_str = f'{args.encoder}_sz_{bl_hp["size"]}_do_{bl_hp["dropout"]}_cd_{bl_hp["code_dropout"]}_dd_{bl_hp["day_dropout"]}_lr_{bl_hp["lr"]}_l2_{bl_hp["l2"]}'
 		clmbr_model_path = f'{args.pt_model_path}/{bl_model_str}'
-		print(clmbr_model_path)
+# 		print(clmbr_model_path)
 
-		# Load  datasets
+# 		# Load  datasets
 		train_dataset, test_dataset = load_datasets(args, task, bl_hp, clmbr_model_path)
 
 # 		# Path where CLMBR probe will be saved
@@ -595,5 +625,51 @@ if __name__ == '__main__':
 
 		df_eval = calc_metrics(args, df_preds)
 		df_eval['CLMBR'] = 'CL_REP'
+		df_eval['task'] = task
+		df_eval.to_csv(f'{result_save_path}/eval.csv',index=False)
+		
+		print('Training OCP probe with params: ', ocp_hp)
+			
+		# Path where CLMBR model is saved
+		cl_model_str = f'gru_sz_800_do_0.2_l2_0.01_lr_5e-5_pool_ocp'
+		clmbr_model_path = f'{args.ocp_best_path}'
+		print(clmbr_model_path)
+
+
+		# Path where CLMBR probe will be saved
+		probe_save_path = f'{args.probe_path}/{task}/ocp/{cl_model_str}'
+		os.makedirs(f"{probe_save_path}",exist_ok=True)
+			
+		result_save_path = f'{args.results_path}/{task}/probes/ocp/{cl_model_str}'
+		os.makedirs(f"{result_save_path}",exist_ok=True)
+			
+		# Load CLMBR model and attach linear probe
+		clmbr_model = ehr_ml.clmbr.CLMBR.from_pretrained(clmbr_model_path, args.device).to(args.device)
+		clmbr_model.freeze()
+
+		probe_model = LinearProbe(clmbr_model, bl_hp['size'], is_ocp=True)
+
+		probe_model.to(args.device)
+
+		print('Training probe...')
+		# Train probe and evaluate on validation 
+		probe_model, val_preds, val_labels, val_ids = train_probe(args, probe_model, train_dataset, probe_save_path)
+
+		val_df = pd.DataFrame({'CLMBR':'OCP', 'model':'linear', 'task':task, 'phase':'val', 'person_id':val_ids, 'pred_probs':val_preds, 'labels':val_labels})
+		val_df.to_csv(f'{result_save_path}/val_preds.csv',index=False)
+
+		print('Testing probe...')
+		test_preds, test_labels, test_ids = evaluate_probe(args, probe_model, test_dataset)
+
+		test_df = pd.DataFrame({'CLMBR':'OCP', 'model':'linear', 'task':task, 'phase':'test', 'person_id':test_ids, 'pred_probs':test_preds, 'labels':test_labels})
+		test_df.to_csv(f'{result_save_path}/test_preds.csv',index=False)
+		df_preds = pd.concat((val_df,test_df))
+		df_preds['CLMBR'] = df_preds['CLMBR'].astype(str)
+		df_preds['model'] = df_preds['model'].astype(str)
+		df_preds['task'] = df_preds['task'].astype(str)
+		df_preds['phase'] = df_preds['phase'].astype(str)
+
+		df_eval = calc_metrics(args, df_preds)
+		df_eval['CLMBR'] = 'OCP'
 		df_eval['task'] = task
 		df_eval.to_csv(f'{result_save_path}/eval.csv',index=False)

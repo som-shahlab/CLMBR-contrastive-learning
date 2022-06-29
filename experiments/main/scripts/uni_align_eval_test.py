@@ -300,39 +300,67 @@ def load_data(args, clmbr_hp):
 
 	return val_data, test_data
 
-def get_sample(args, data, clmbr_hp):
-	clmbr_model_path = f'{args.clmbr_path}/pretrained/models/{args.encoder}_sz_{clmbr_hp["size"]}_do_{clmbr_hp["dropout"]}_cd_{clmbr_hp["code_dropout"]}_dd_{clmbr_hp["day_dropout"]}_lr_{clmbr_hp["lr"]}_l2_{clmbr_hp["l2"]}'
-	batch_idxs = np.random.choice([i for i in range(len(data[0]))], args.batch_size, replace=False)
-	batch_ids, batch_days, batch_labels = [], [], []
+def get_samples(args, dataset, model):
+	
+	
+	batches = []
+	data = []
+	with DataLoader(dataset, model.config['num_first'], is_val=True, batch_size=1, seed=args.seed, device=args.device) as loader:
+		for j, b in enumerate(loader):
+			data.append(b)
+			# if j == 0:
+			# 	print(b['rnn'][0])
+			# 	print(b['rnn'][1])
+			# 	print(b['rnn'][2])
+			# 	print(b['rnn'][3])
+			# 	print(b['rnn'][4])
+			# 	print(b['rnn'][5])
+			# 	print(b['rnn'][6])
+			# 	print(adsda)
+	batch_idxs = np.random.choice([i for i in range(len(data))], args.batch_size, replace=False)
+	# batch_ids, batch_days, batch_labels = [], [], []
+	batch = {'pid':[],'day_index':[],'rnn':([],[],[],[],[],[],[]),'task':[],'label':[]}
 	for idx in batch_idxs:
-		batch_labels.append(data[0][idx])
-		batch_ids.append(data[1][idx])
-		batch_days.append(data[2][idx])
-	batch = (batch_labels, batch_ids, batch_days)
-	# print(batch)
-	dataset = PatientTimelineDataset(args.extract_path + '/extract.db', 
-									 args.extract_path + '/ontology.db', 
-									 f'{clmbr_model_path}/info.json', 
-									 batch, 
-									 batch )
-	return dataset
+		batch['pid'].append(data[idx]['pid'][0])
+		batch['day_index'].append(data[idx]['day_index'][0])
+		batch['rnn'][0].append(data[idx]['rnn'][0])
+		batch['rnn'][1].append(data[idx]['rnn'][1])
+		batch['rnn'][2].append(data[idx]['rnn'][2])
+		batch['rnn'][3].append(data[idx]['rnn'][3])
+		batch['rnn'][4].append(data[idx]['rnn'][4])
+		batch['rnn'][5].append(data[idx]['rnn'][5])
+		batch['rnn'][6].append(data[idx]['rnn'][6])
+		batch['task'].append(data[idx]['task'][0])
+		batch['label'].append(data[idx]['label'][0][0])
+		
+		batch['rnn'][0] = torch.Tensor(batch['rnn'][0])
+		batch['rnn'][1] = torch.Tensor(batch['rnn'][1])
+		batch['rnn'][2] = torch.Tensor(batch['rnn'][2])
+		batch['rnn'][3] = torch.Tensor(batch['rnn'][3])
+		batch['rnn'][4] = torch.Tensor(batch['rnn'][4])
+		batch['rnn'][5] = torch.Tensor(batch['rnn'][5])
+		batch['rnn'][6] = torch.Tensor(batch['rnn'][6])
 
-def eval_alignment(args, model, data, clmbr_hp):
+		batches.append(batch)
+	return batches
+
+def eval_alignment(args, model, dataset, clmbr_hp):
 	align_list = []
 	for i in range(args.iterations):
-		dataset = get_sample(args, data, clmbr_hp)
-		with DataLoader(dataset, model.config['num_first'], is_val=True, batch_size=99999, seed=args.seed, device=args.device) as loader:
-			for j, batch in enumerate(loader):
-				outputs = model(batch)
-		
-				z1 =outputs['z1']
-				z2 = outputs['z2']
-				align = alignment(z1, z2)
+		batches = get_samples(args, dataset, model)
+		# with DataLoader(dataset, model.config['num_first'], is_val=True, batch_size=99999, seed=args.seed, device=args.device) as loader:
+		for j, batch in enumerate(batches):
+			print(batch['rnn'])
+			outputs = model(batch)
 
-				align_list.append(align.item())
+			z1 =outputs['z1']
+			z2 = outputs['z2']
+			align = alignment(z1, z2)
+
+			align_list.append(align.item())
 	return np.array(align_list)
 
-def eval_uniform(args, model, data, clmbr_hp):
+def eval_uniform(args, model, dataset, clmbr_hp):
 	uniform_list = []
 	for i in range(args.iterations):
 		dataset = get_sample(args, data, clmbr_hp)
@@ -396,16 +424,38 @@ def eval_model(args, val_dataset, test_dataset, clmbr_hp, cl_hp=None, pooler='BL
 	clmbr_model.train()
 	config = clmbr_model.config
 	
+	dataset = PatientTimelineDataset(args.extract_path + '/extract.db', 
+								 args.extract_path + '/ontology.db', 
+								 f'{clmbr_model_path}/info.json', 
+								 val_data, 
+								 test_data)
+	
+	val_data_list = []
+	for i in dataset.get_iterator(False, len(val_data), args.seed, config['num_first'], 0, 0):
+		val_data_list.append(i)
+	
+	test_data_list = []
+	for i in dataset.get_iterator(True, len(val_data), args.seed, config['num_first'], 0, 0):
+		test_data_list.append(i)
+	
+	print(len(val_data_list))
+	print(len(test_data_list))
+	# test_dataset = PatientTimelineDataset(args.extract_path + '/extract.db', 
+	# 							 args.extract_path + '/ontology.db', 
+	# 							 f'{clmbr_model_path}/info.json', 
+	# 							 test_data, 
+	# 							 test_data)
+	
 	mw = MetricWrapper(clmbr_model, args.pooler, args.device)
 	
-	val_align= eval_alignment(args, mw, val_data, clmbr_hp)
+	val_align= eval_alignment(args, mw, val_dataset, clmbr_hp)
 	pd.DataFrame(val_align).reset_index(drop=True).to_csv(f'{results_save_path}/val_align_vals.csv')
-	test_align = eval_alignment(args, mw, test_data, clmbr_hp)
+	test_align = eval_alignment(args, mw, test_dataset, clmbr_hp)
 	pd.DataFrame(test_align).reset_index(drop=True).to_csv(f'{results_save_path}/test_align_vals.csv')
 	clmbr_model.eval()
-	val_uniform = eval_uniform(args, mw, val_data, clmbr_hp)
+	val_uniform = eval_uniform(args, mw, val_dataset, clmbr_hp)
 	pd.DataFrame(val_uniform).reset_index(drop=True).to_csv(f'{results_save_path}/val_uniform_vals.csv')
-	test_uniform = eval_uniform(args, mw, test_data, clmbr_hp)
+	test_uniform = eval_uniform(args, mw, test_dataset, clmbr_hp)
 	pd.DataFrame(test_uniform).reset_index(drop=True).to_csv(f'{results_save_path}/test_uniform_vals.csv')
 	
 	ci_df = pd.DataFrame()
@@ -517,6 +567,7 @@ ocp_grid = list(
 )
 
 val_data, test_data = load_data(args, grid[0])
+
 
 
 # print('BL')

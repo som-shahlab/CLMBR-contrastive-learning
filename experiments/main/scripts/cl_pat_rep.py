@@ -341,6 +341,8 @@ def train(args, model, train_dataset, val_dataset, lr, clmbr_save_path, clmbr_in
 	config = model.config
 	optimizer = optim.Adam([p for n, p in model.named_parameters() if p.requires_grad], lr=lr)
 	best_val_loss = 9999999
+	val_output_df = pd.DataFrame({'epoch':[],'preds':[],'labels':[]})
+
 	for e in range(args.epochs):
 		model.train()
 		train_loss = []
@@ -360,6 +362,10 @@ def train(args, model, train_dataset, val_dataset, lr, clmbr_save_path, clmbr_in
 		print('Training loss:',  np.sum(train_loss))
 		writer.add_scalar(f'{bl_int}-{cl_int}/Loss/train', np.sum(train_loss), e)
 		val_preds, val_lbls, val_losses = evaluate_model(args, model, val_dataset)
+		df = pd.DataFrame({'epoch':e,'preds':val_preds,'labels':val_lbls})
+		val_output_df = pd.concat((val_output_df,df),axis=0)
+		
+
 		scaled_val_loss = np.sum(val_losses)*model.temp
 		writer.add_scalar('{bl_int}-{cl_int}/Loss/val', scaled_val_loss, e)
 		
@@ -371,7 +377,8 @@ def train(args, model, train_dataset, val_dataset, lr, clmbr_save_path, clmbr_in
 		if scaled_val_loss < best_val_loss:
 			best_val_loss = scaled_val_loss
 			best_model = copy.deepcopy(model.clmbr_model)
-	return best_model, best_val_loss
+	val_output_df.to_csv(f'{clmbr_save_path}/val_preds.csv', index=False)
+	return best_model, best_val_loss, val_output_df
 
 def evaluate_model(args, model, dataset):
 	model.eval()
@@ -486,7 +493,7 @@ if __name__ == '__main__':
 			model.train()
 
 			# Run finetune procedure
-			clmbr_model, val_loss = train(args, model, train_dataset, val_dataset, float(cl_hp['lr']), clmbr_save_path, clmbr_info_path, i, j)
+			clmbr_model, val_loss, val_df = train(args, model, train_dataset, val_dataset, float(cl_hp['lr']), clmbr_save_path, clmbr_info_path, i, j)
 			writer.flush()
 			clmbr_model.freeze()
 			if val_loss < best_val_loss:
@@ -502,7 +509,7 @@ if __name__ == '__main__':
 					json.dump(config,f)
 				with open(f"{best_path}/hyperparams.yml", 'w') as file: # fix format of dump
 					yaml.dump(best_params,file)
-				
+				val_df.to_csv(f'{best_path}/val_preds.csv', index=False)
 			# Save model and save info and config to new model directory for downstream evaluation
 			torch.save(clmbr_model.state_dict(), os.path.join(clmbr_save_path,'best'))
 			shutil.copyfile(f'{clmbr_info_path}', f'{clmbr_save_path}/info.json')
