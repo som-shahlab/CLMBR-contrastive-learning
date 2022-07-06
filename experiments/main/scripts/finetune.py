@@ -145,7 +145,7 @@ parser.add_argument(
 parser.add_argument(
     '--pooler',
     type=str,
-    default='cls',
+    default='trivial',
     help='Pooler type to retrieve embedding.'
 )
 
@@ -273,6 +273,16 @@ class Pooler(nn.Module):
 			z1_out = torch.reshape(z1_out, (embeds.shape[0]-skipped, 1, embeds.shape[-1]))
 			z2_out = torch.reshape(z2_out, (embeds.shape[0]-skipped, 1, embeds.shape[-1]))
 			return z1_out, z2_out
+		elif self.pooler == 'trivial':
+			z1_out = torch.tensor([]).to(self.device)
+			z2_out = torch.tensor([]).to(self.device)
+			for i, e in enumerate(embeds):
+				idx = np.random.randint(0,e.shape[0]-1)
+				z1_out = torch.concat((z1_out, e[idx]), 0)
+				z2_out = torch.concat((z2_out, e[idx+1]), 0)
+			z1_out = torch.reshape(z1_out, (embeds.shape[0], 1, embeds.shape[-1]))
+			z2_out = torch.reshape(z2_out, (embeds.shape[0], 1, embeds.shape[-1]))
+			return z1_out, z2_out
 
 class ContrastiveLearn(nn.Module):
 	"""
@@ -307,7 +317,7 @@ class ContrastiveLearn(nn.Module):
 				rand_day_indices.append(random.choice(di))
 		
 		# Use pooler to get target embeddings
-		if self.pooler.pooler == 'diff_pat':
+		if self.pooler.pooler == 'diff_pat' or self.pooler.pooler == 'trivial':
 			z1_target_embeds, z2_target_embeds = self.pooler(z1_embeds) 
 		else:
 			z1_target_embeds = self.pooler(z1_embeds, rand_day_indices)
@@ -369,7 +379,10 @@ def finetune(args, model, train_dataset, val_dataset, lr, clmbr_save_path, clmbr
 	config = model.clmbr_model.config
 	optimizer = optim.Adam([p for n, p in model.named_parameters() if p.requires_grad], lr=lr)
 	best_val_loss = 9999999
-	val_output_df = pd.DataFrame({'epoch':[],'preds':[],'labels':[]})
+	val_output_df = pd.DataFrame()
+	best_epoch = 0
+	model_train_loss = []
+	model_val_loss = []
 	for e in range(args.epochs):
 		model.train()
 		train_loss = []
@@ -387,8 +400,11 @@ def finetune(args, model, train_dataset, val_dataset, lr, clmbr_save_path, clmbr
 					optimizer.step()
 					train_loss.append(loss.item())
 		print('Training loss:',  np.sum(train_loss))
+		model_train_loss.append(np.sum(train_loss))
+		
 		val_preds, val_lbls, val_losses = evaluate_model(args, model, val_dataset)
 		scaled_val_loss = np.sum(val_losses)*model.temp
+		model_val_loss.append(scaled_val_loss)
 		df = pd.DataFrame({'epoch':e,'preds':val_preds,'labels':val_lbls})
 		val_output_df = pd.concat((val_output_df,df),axis=0)
 		os.makedirs(f'{clmbr_save_path}/{e}',exist_ok=True)
@@ -399,8 +415,15 @@ def finetune(args, model, train_dataset, val_dataset, lr, clmbr_save_path, clmbr
 			json.dump(config,f)			
 		if scaled_val_loss < best_val_loss:
 			best_val_loss = scaled_val_loss
+			best_epoch = e
 			best_model = copy.deepcopy(model.clmbr_model)
+	df = pd.DataFrame(model_train_loss)
+	df.to_csv(f'clmbr_save_path/train_loss.csv')
+	df = pd.DataFrame(model_val_loss)
+	df.to_csv(f'clmbr_save_path/val_loss.csv')
 	val_output_df.to_csv(f'{clmbr_save_path}/val_preds.csv', index=False)
+	with open(f'{clmbr_save_path}/best_epoch.txt', 'w') as f:
+		f.write(best_epoch)
 	return best_model, best_val_loss, val_output_df
 
 def evaluate_model(args, model, dataset):
@@ -444,7 +467,7 @@ if __name__ == '__main__':
 		ParameterGrid(
 			yaml.load(
 				open(
-					f"{os.path.join(args.hparams_fpath,'cl')}.yml",
+					f"{os.path.join(args.hparams_fpath,f'{args.pooler}')}.yml",
 					'r'
 				),
 				Loader=yaml.FullLoader
@@ -452,7 +475,7 @@ if __name__ == '__main__':
 		)
 	)
 	for i, clmbr_hp in enumerate(grid):
-		
+		print(args.pooler)
 		clmbr_model_path = f'{args.pt_model_path}/{args.encoder}_sz_{clmbr_hp["size"]}_do_{clmbr_hp["dropout"]}_cd_{clmbr_hp["code_dropout"]}_dd_{clmbr_hp["day_dropout"]}_lr_{clmbr_hp["lr"]}_l2_{clmbr_hp["l2"]}'
 		print(clmbr_model_path)
 		best_val_loss = 9999999

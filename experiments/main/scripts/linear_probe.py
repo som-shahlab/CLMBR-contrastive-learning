@@ -403,7 +403,7 @@ if __name__ == '__main__':
 	args = parser.parse_args()
 	
 	torch.manual_seed(args.seed)
-	tasks = ['hospital_mortality', 'LOS_7', 'icu_admission', 'readmission_30', 'sudden_cardiac_death', 'stroke', 'bladder_cancer', 'breast_cancer', 'acute_renal_failure', 'acute_myocardial_infarction', 'diabetic_ketoacidosis', 'edema', 'hyperkylemia', 'renal_cancer', 'revascularization']
+	tasks = ['hospital_mortality', 'LOS_7', 'icu_admission', 'readmission_30']#, 'sudden_cardiac_death', 'stroke', 'bladder_cancer', 'breast_cancer', 'acute_renal_failure', 'acute_myocardial_infarction', 'diabetic_ketoacidosis', 'edema', 'hyperkylemia', 'renal_cancer', 'revascularization']
 	
 	# load best CLMBR model parameter grid
 	bl_hp = list(
@@ -418,29 +418,29 @@ if __name__ == '__main__':
 		)
 	)[0]
 	
-	rd_hp = list(
-		ParameterGrid(
-			yaml.load(
-				open(
-					f"{os.path.join(args.ft_model_path + '_' + 'rand_day','hyperparams')}.yml",
-					'r'
-				),
-				Loader=yaml.FullLoader
-			)
-		)
-	)[0]
+# 	rd_hp = list(
+# 		ParameterGrid(
+# 			yaml.load(
+# 				open(
+# 					f"{os.path.join(args.ft_model_path + '_' + 'rand_day','hyperparams')}.yml",
+# 					'r'
+# 				),
+# 				Loader=yaml.FullLoader
+# 			)
+# 		)
+# 	)[0]
 	
-	dp_hp = list(
-		ParameterGrid(
-			yaml.load(
-				open(
-					f"{os.path.join(args.ft_model_path + '_' + 'diff_pat','hyperparams')}.yml",
-					'r'
-				),
-				Loader=yaml.FullLoader
-			)
-		)
-	)[0]
+# 	dp_hp = list(
+# 		ParameterGrid(
+# 			yaml.load(
+# 				open(
+# 					f"{os.path.join(args.ft_model_path + '_' + 'diff_pat','hyperparams')}.yml",
+# 					'r'
+# 				),
+# 				Loader=yaml.FullLoader
+# 			)
+# 		)
+# 	)[0]
 	
 	mr_hp = list(
 		ParameterGrid(
@@ -502,40 +502,40 @@ if __name__ == '__main__':
 		os.makedirs(f"{result_save_path}",exist_ok=True)
 			
 		# Load CLMBR model and attach linear probe
-		clmbr_model = ehr_ml.clmbr.CLMBR.from_pretrained(clmbr_model_path, args.device).to(args.device)
-		clmbr_model.freeze()
+# 		clmbr_model = ehr_ml.clmbr.CLMBR.from_pretrained(clmbr_model_path, args.device).to(args.device)
+# 		clmbr_model.freeze()
 
-		probe_model = LinearProbe(clmbr_model, bl_hp['size'])
+# 		probe_model = LinearProbe(clmbr_model, bl_hp['size'])
 
-		probe_model.to(args.device)
+# 		probe_model.to(args.device)
 
-		print('Training probe...')
-		# Train probe and evaluate on validation 
-		probe_model, val_preds, val_labels, val_ids = train_probe(args, probe_model, train_dataset, probe_save_path)
+# 		print('Training probe...')
+# 		# Train probe and evaluate on validation 
+# 		probe_model, val_preds, val_labels, val_ids = train_probe(args, probe_model, train_dataset, probe_save_path)
 
-		val_df = pd.DataFrame({'CLMBR':'BL', 'model':'linear', 'task':task, 'phase':'val', 'person_id':val_ids, 'pred_probs':val_preds, 'labels':val_labels})
-		val_df.to_csv(f'{result_save_path}/val_preds.csv',index=False)
+# 		val_df = pd.DataFrame({'CLMBR':'BL', 'model':'linear', 'task':task, 'phase':'val', 'person_id':val_ids, 'pred_probs':val_preds, 'labels':val_labels})
+# 		val_df.to_csv(f'{result_save_path}/val_preds.csv',index=False)
 
-		print('Testing probe...')
-		test_preds, test_labels, test_ids = evaluate_probe(args, probe_model, test_dataset)
+# 		print('Testing probe...')
+# 		test_preds, test_labels, test_ids = evaluate_probe(args, probe_model, test_dataset)
 
-		test_df = pd.DataFrame({'CLMBR':'BL', 'model':'linear', 'task':task, 'phase':'test', 'person_id':test_ids, 'pred_probs':test_preds, 'labels':test_labels})
-		test_df.to_csv(f'{result_save_path}/test_preds.csv',index=False)
-		df_preds = pd.concat((val_df,test_df))
-		df_preds['CLMBR'] = df_preds['CLMBR'].astype(str)
-		df_preds['model'] = df_preds['model'].astype(str)
-		df_preds['task'] = df_preds['task'].astype(str)
-		df_preds['phase'] = df_preds['phase'].astype(str)
+# 		test_df = pd.DataFrame({'CLMBR':'BL', 'model':'linear', 'task':task, 'phase':'test', 'person_id':test_ids, 'pred_probs':test_preds, 'labels':test_labels})
+# 		test_df.to_csv(f'{result_save_path}/test_preds.csv',index=False)
+# 		df_preds = pd.concat((val_df,test_df))
+# 		df_preds['CLMBR'] = df_preds['CLMBR'].astype(str)
+# 		df_preds['model'] = df_preds['model'].astype(str)
+# 		df_preds['task'] = df_preds['task'].astype(str)
+# 		df_preds['phase'] = df_preds['phase'].astype(str)
 
-		df_eval = calc_metrics(args, df_preds)
-		df_eval['CLMBR'] = 'BL'
-		df_eval['task'] = task
-		df_eval.to_csv(f'{result_save_path}/eval.csv',index=False)
+# 		df_eval = calc_metrics(args, df_preds)
+# 		df_eval['CLMBR'] = 'BL'
+# 		df_eval['task'] = task
+# 		df_eval.to_csv(f'{result_save_path}/eval.csv',index=False)
 		
-		for cl_hp in [dp_hp, rd_hp, mr_hp]:
+		for cl_hp in [mr_hp]:#[dp_hp, rd_hp, mr_hp]:
 			print('Training CL-CLMBR probe with params: ', cl_hp)
 			cl_model_str = f'bs_{cl_hp["batch_size"]}_lr_{cl_hp["lr"]}_temp_{cl_hp["temp"]}_pool_{cl_hp["pool"]}'
-			cl_model_path = f"{args.ft_model_path}" + "" if cl_hp['pool'] == 'mean_rep' else '_' + cl_hp['pool']
+			cl_model_path = f"{args.ft_model_path}_{cl_hp['pool']}"
 			# Create probe and result directories
 			probe_save_path = f'{args.probe_path}/{task}/contrastive_learn/{bl_model_str}/{cl_model_str}'
 

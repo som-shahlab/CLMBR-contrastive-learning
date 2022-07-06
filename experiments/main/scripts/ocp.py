@@ -333,8 +333,10 @@ def train(args, model, train_data, val_data, windows, lr, clmbr_save_path, clmbr
 										 f'{clmbr_info_path}', 
 										 train_data, 
 										 val_data )
-	val_output_df = pd.DataFrame({'epoch':[],'preds':[],'labels':[]})
-	# timelines = ehr_ml.timeline.TimelineReader('/local-scratch/nigam/projects/jlemmon/cl-clmbr/experiments/main/data/extracts/20210723/extract.db')
+	val_output_df = pd.DataFrame()
+	best_epoch = 0
+	model_train_loss = []
+	model_val_loss = []
 	for e in range(args.epochs):
 		model.train()
 		train_loss = []
@@ -357,9 +359,11 @@ def train(args, model, train_data, val_data, windows, lr, clmbr_save_path, clmbr
 					train_loss.append(loss.item())
 
 		print('Training loss:',  np.sum(train_loss))
+		model_train_loss.append(np.sum(train_loss))
 	# 		writer.add_scalar(f'{hp_int}/Loss/train', np.sum(train_loss), e)
 		val_preds, val_lbls, val_losses = evaluate_model(args, model, val_data, windows)
 		val_loss = np.sum(val_losses)
+		model_val_loss.append(val_loss)
 		df = pd.DataFrame({'epoch':e,'preds':val_preds,'labels':val_lbls})
 		val_output_df = pd.concat((val_output_df,df),axis=0)
 	# 		writer.add_scalar('{hp_int}/Loss/val', scaled_val_loss, e)
@@ -371,10 +375,17 @@ def train(args, model, train_data, val_data, windows, lr, clmbr_save_path, clmbr
 			json.dump(config,f)			
 		if val_loss < best_val_loss:
 			best_val_loss = val_loss
+			best_epoch = e
 			best_model = copy.deepcopy(model.clmbr_model)
 		print('Epoch train loss', np.sum(train_loss))
 		print('Epoch val loss', val_loss)
 	val_output_df.to_csv(f'{clmbr_save_path}/val_preds.csv', index=False)
+	df = pd.DataFrame(model_train_loss)
+	df.to_csv(f'clmbr_save_path/train_loss.csv')
+	df = pd.DataFrame(model_val_loss)
+	df.to_csv(f'clmbr_save_path/val_loss.csv')
+	with open(f'{clmbr_save_path}/best_epoch.txt', 'w') as f:
+		f.write(best_epoch)
 	return best_model, best_val_loss, val_output_df
 
 def evaluate_model(args, model, data, windows):

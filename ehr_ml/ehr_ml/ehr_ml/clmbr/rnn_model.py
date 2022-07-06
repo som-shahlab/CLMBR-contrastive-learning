@@ -471,7 +471,7 @@ class PatientRNN_OCP(nn.Module):
 			combined_with_day_information.narrow(0, offset, length)
 			for offset, length in all_lengths
 		]
-		if windows == None:
+		if windows is None:
 			labels = None
 			packed_sequence = nn.utils.rnn.pack_sequence(codes_split_by_patient)
 		else:

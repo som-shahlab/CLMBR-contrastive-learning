@@ -342,7 +342,9 @@ def train(args, model, train_dataset, val_dataset, lr, clmbr_save_path, clmbr_in
 	optimizer = optim.Adam([p for n, p in model.named_parameters() if p.requires_grad], lr=lr)
 	best_val_loss = 9999999
 	val_output_df = pd.DataFrame({'epoch':[],'preds':[],'labels':[]})
-
+	model_train_loss = []
+	model_val_loss = []
+	best_epoch = 0
 	for e in range(args.epochs):
 		model.train()
 		train_loss = []
@@ -360,15 +362,16 @@ def train(args, model, train_dataset, val_dataset, lr, clmbr_save_path, clmbr_in
 					optimizer.step()
 					train_loss.append(loss.item())
 		print('Training loss:',  np.sum(train_loss))
-		writer.add_scalar(f'{bl_int}-{cl_int}/Loss/train', np.sum(train_loss), e)
+		model_train_loss.append(np.sum(train_loss))
+		
 		val_preds, val_lbls, val_losses = evaluate_model(args, model, val_dataset)
+		
 		df = pd.DataFrame({'epoch':e,'preds':val_preds,'labels':val_lbls})
 		val_output_df = pd.concat((val_output_df,df),axis=0)
 		
 
 		scaled_val_loss = np.sum(val_losses)*model.temp
-		writer.add_scalar('{bl_int}-{cl_int}/Loss/val', scaled_val_loss, e)
-		
+		model_val_loss.append(scaled_val_loss)
 		os.makedirs(f'{clmbr_save_path}/{e}',exist_ok=True)
 		torch.save(clmbr_model.state_dict(), os.path.join(clmbr_save_path,f'{e}/best'))
 		shutil.copyfile(f'{clmbr_info_path}', f'{clmbr_save_path}/{e}/info.json')
@@ -376,8 +379,15 @@ def train(args, model, train_dataset, val_dataset, lr, clmbr_save_path, clmbr_in
 			json.dump(config,f)			
 		if scaled_val_loss < best_val_loss:
 			best_val_loss = scaled_val_loss
+			best_epoch = e
 			best_model = copy.deepcopy(model.clmbr_model)
 	val_output_df.to_csv(f'{clmbr_save_path}/val_preds.csv', index=False)
+	df = pd.DataFrame(model_train_loss)
+	df.to_csv(f'clmbr_save_path/train_loss.csv')
+	df = pd.DataFrame(model_val_loss)
+	df.to_csv(f'clmbr_save_path/val_loss.csv')
+	with open(f'{clmbr_save_path}/best_epoch.txt', 'w') as f:
+		f.write(best_epoch)
 	return best_model, best_val_loss, val_output_df
 
 def evaluate_model(args, model, dataset):
