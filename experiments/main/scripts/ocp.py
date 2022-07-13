@@ -127,7 +127,7 @@ parser.add_argument(
 parser.add_argument(
     '--epochs',
     type=int,
-    default=200,
+    default=100,
     help='Number of training epochs.'
 )
 
@@ -202,6 +202,13 @@ parser.add_argument(
 )
 
 parser.add_argument(
+	'--patience',
+	type=int,
+	default=10,
+	help='Number of epochs to wait before triggering early stopping.'
+)
+
+parser.add_argument(
     '--idx_end_date',
     type=str,
     default='2016-12-31',
@@ -210,7 +217,7 @@ parser.add_argument(
 
 class MLPLayer(nn.Module):
 	"""
-	Linear classifier layer for use with [CLS] pooler.
+	Linear classifier layer.
 	"""
 	def __init__(self, size):
 		super().__init__()
@@ -225,7 +232,7 @@ class MLPLayer(nn.Module):
 
 class Pooler(nn.Module):
 	"""
-	Pooler module to get the pooled embedding value. [cls] is equivalent to the final hidden layer embedding.
+	Pooler module to get the pooled embedding value. 
 	"""
 	def __init__(self, pooler='ocp', device=None):
 		super().__init__()
@@ -270,7 +277,23 @@ class ContrastiveLearn(nn.Module):
 		outputs['preds'] = preds
 		outputs['labels'] = labels
 		return outputs
-    
+
+class EarlyStopping():
+	def __init__(self, patience):
+		self.patience = patience
+		self.early_stop = False
+		self.best_loss = 9999999
+		self.counter = 0
+	def __call__(self, loss):
+		if self.best_loss > loss:
+			self.counter = 0
+			self.best_loss = loss
+		else:
+			self.counter += 1
+			if self.counter == self.patience:
+				self.early_stop = True
+		return self.early_stop		
+	
 def load_data(args):
 	"""
 	Load datasets from split csv files.
@@ -319,7 +342,7 @@ def get_adm_window_indices(adm_df, pids):
 
 	return adm_df
 	
-def train(args, model, train_data, val_data, windows, lr, clmbr_save_path, clmbr_info_path, hp_int):
+def train(args, model, train_dataset, windows, lr, clmbr_save_path, clmbr_info_path, hp_int):
 	"""
 	Train CLMBR model using CL objective.
 	"""
@@ -328,31 +351,31 @@ def train(args, model, train_data, val_data, windows, lr, clmbr_save_path, clmbr
 	config = model.config
 	optimizer = optim.Adam([p for n, p in model.named_parameters() if p.requires_grad], lr=lr)
 	best_val_loss = 9999999
-	train_dataset = PatientTimelineDataset(args.extract_path + '/extract.db', 
-										 args.extract_path + '/ontology.db', 
-										 f'{clmbr_info_path}', 
-										 train_data, 
-										 val_data )
+	early_stop = EarlyStopping(args.patience)
+	train_output_df = pd.DataFrame()
 	val_output_df = pd.DataFrame()
-	best_epoch = 0
 	model_train_loss = []
 	model_val_loss = []
+	best_epoch = 0
 	for e in range(args.epochs):
 		model.train()
 		train_loss = []
-		
+		train_preds = []
+		train_lbls = []
 		with DataLoader(train_dataset, model.config['num_first'], is_val=False, batch_size=1, seed=args.seed, device=args.device) as train_loader:
 			for batch in train_loader:
 					 
 				pid_df = windows.query('ehr_id==@batch["pid"][0]')
 				if len(pid_df) < 2:
-					pass
+					continue
 				else:
 					#drop last admission if odd number
 					if len(pid_df) % 2 != 0:
 						pid_df = pid_df[:-1]
 					optimizer.zero_grad()
 					outputs = model(batch, pid_df)
+					train_preds.extend(list(outputs['preds'].detach().clone().cpu().numpy()))
+					train_lbls.extend(list(outputs['labels'].detach().clone().cpu().numpy()))
 					loss = outputs["loss"]
 					loss.backward()
 					optimizer.step()
@@ -360,32 +383,49 @@ def train(args, model, train_data, val_data, windows, lr, clmbr_save_path, clmbr
 
 		print('Training loss:',  np.sum(train_loss))
 		model_train_loss.append(np.sum(train_loss))
-	# 		writer.add_scalar(f'{hp_int}/Loss/train', np.sum(train_loss), e)
+		
+		# evaluate on validation set
 		val_preds, val_lbls, val_losses = evaluate_model(args, model, val_data, windows)
 		val_loss = np.sum(val_losses)
 		model_val_loss.append(val_loss)
+		
+		
+		# Save train and val model predictions/labels
+		df = pd.DataFrame({'epoch':e,'preds':train_preds,'labels':train_lbls})
+		train_output_df = pd.concat((train_output_df,df),axis=0)
 		df = pd.DataFrame({'epoch':e,'preds':val_preds,'labels':val_lbls})
 		val_output_df = pd.concat((val_output_df,df),axis=0)
-	# 		writer.add_scalar('{hp_int}/Loss/val', scaled_val_loss, e)
 
+		#save current epoch model
 		os.makedirs(f'{clmbr_save_path}/{e}',exist_ok=True)
 		torch.save(clmbr_model.state_dict(), os.path.join(clmbr_save_path,f'{e}/best'))
 		shutil.copyfile(f'{clmbr_info_path}', f'{clmbr_save_path}/{e}/info.json')
 		with open(f'{clmbr_save_path}/{e}/config.json', 'w') as f:
-			json.dump(config,f)			
+			json.dump(config,f)
+			
+		# save model as best model if condition met
 		if val_loss < best_val_loss:
 			best_val_loss = val_loss
 			best_epoch = e
 			best_model = copy.deepcopy(model.clmbr_model)
+			
 		print('Epoch train loss', np.sum(train_loss))
 		print('Epoch val loss', val_loss)
-	val_output_df.to_csv(f'{clmbr_save_path}/val_preds.csv', index=False)
+		# Trigger early stopping if model hasn't improved for awhile
+		if early_stop(scaled_val_loss):
+			print(f'Early stopping at epoch {e}')
+			break
+		
+	# write train and val loss/preds to csv
 	df = pd.DataFrame(model_train_loss)
-	df.to_csv(f'clmbr_save_path/train_loss.csv')
+	df.to_csv(f'{clmbr_save_path}/train_loss.csv')
 	df = pd.DataFrame(model_val_loss)
-	df.to_csv(f'clmbr_save_path/val_loss.csv')
+	df.to_csv(f'{clmbr_save_path}/val_loss.csv')
+	train_output_df.to_csv(f'{clmbr_save_path}/train_preds.csv', index=False)
+	val_output_df.to_csv(f'{clmbr_save_path}/val_preds.csv', index=False)
 	with open(f'{clmbr_save_path}/best_epoch.txt', 'w') as f:
-		f.write(best_epoch)
+		f.write(f'{best_epoch}')
+		
 	return best_model, best_val_loss, val_output_df
 
 def evaluate_model(args, model, data, windows):
@@ -486,14 +526,15 @@ if __name__ == '__main__':
 		print(clmbr_save_path)
 		os.makedirs(f"{clmbr_save_path}",exist_ok=True)
 		train_data, val_data, windows = load_data(args)
-
+		train_dataset = PatientTimelineDataset(args.extract_path + '/extract.db', 
+										 args.extract_path + '/ontology.db', 
+										 f'{clmbr_info_path}', 
+										 train_data, 
+										 val_data )
 		
 		config["model_dir"] = clmbr_save_path
 		config['lr'] = hp['lr']
 		clmbr_model = ehr_ml.clmbr.CLMBR(config, info).to(torch.device(args.device))
-		# Modify CLMBR config settings
-
-		# clmbr_model.config["epochs_per_cycle"] = args.epochs
 
 		config = clmbr_model.config
 
@@ -503,7 +544,7 @@ if __name__ == '__main__':
 		model.train()
 
 		# Run finetune procedure
-		clmbr_model, val_loss, val_df = train(args, model, train_data, val_data, windows, float(hp['lr']), clmbr_save_path, clmbr_info_path, i)
+		clmbr_model, val_loss, val_df = train(args, model, train_dataset, windows, float(hp['lr']), clmbr_save_path, clmbr_info_path, i)
 		writer.flush()
 		clmbr_model.freeze()
 		if val_loss < best_val_loss:

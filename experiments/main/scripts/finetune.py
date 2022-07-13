@@ -227,13 +227,6 @@ class Similarity(nn.Module):
 	def forward(self, x, y):
 		if self.sim == 'cos':
 			return self.cos(x, y) / self.temp
-		elif self.sim == 'sumcos':
-			# sum loss over patient timeline
-
-			# iterate over patients
-			# iterate over patient timeline
-			# for day 1..D sum up cos(A_d,B_d)/self.temp
-			pass
 		else:
 			return torch.dot(torch.flatten(x),torch.flatten(y)).unsqueeze(0).unsqueeze(0)
 
@@ -248,17 +241,18 @@ class Pooler(nn.Module):
         
 	def forward(self, embeds, day_indices=None):
 		# Only CLS style pooling for now
-		if self.pooler == 'cls':
-			return embeds[-1]
-		elif self.pooler == 'mean_rep':
+		if self.pooler == 'mean_rep':
+			# Generate positive pairs using mean embedding of both augmented timelines
 			return torch.mean(embeds,1,True)
 		elif self.pooler == 'rand_day':
+			# Generate positive pairs using the same random day index for both augmented timelines
 			outputs = torch.tensor([]).to(self.device)
 			for i, e in enumerate(embeds):
 				outputs = torch.concat((outputs, e[day_indices[i]]), 0)
 			outputs = torch.reshape(outputs, (embeds.shape[0], 1, embeds.shape[-1]))
 			return outputs
 		elif self.pooler == 'diff_pat':
+			# Generate positive pairs using two random day embeddings from one patient timeline
 			z1_out = torch.tensor([]).to(self.device)
 			z2_out = torch.tensor([]).to(self.device)
 			skipped = 0
@@ -274,6 +268,8 @@ class Pooler(nn.Module):
 			z2_out = torch.reshape(z2_out, (embeds.shape[0]-skipped, 1, embeds.shape[-1]))
 			return z1_out, z2_out
 		elif self.pooler == 'trivial':
+			# Generate positive pairs using two consecutive day embeddings
+			# Used for sanity check on task difficulty
 			z1_out = torch.tensor([]).to(self.device)
 			z2_out = torch.tensor([]).to(self.device)
 			for i, e in enumerate(embeds):
@@ -301,15 +297,14 @@ class ContrastiveLearn(nn.Module):
 
 	def forward(self, batch, is_train=True):
 		outputs = dict()
-		# print(batch['pid'])
+		
 		# For patient timeline in batch get CLMBR embedding
 		z1_embeds = self.clmbr_model.timeline_model(batch["rnn"])
-		# print(z1_embeds.shape)
+
 		# Run batch through CLMBR again to get different masked embedding for positive pairs
 		z2_embeds = self.clmbr_model.timeline_model(batch["rnn"])
-		# print(z2_embeds.shape)
+
 		# Flatten embeddings
-		
 		rand_day_indices = None
 		if self.pooler.pooler == 'rand_day':
 			rand_day_indices = []
@@ -322,8 +317,6 @@ class ContrastiveLearn(nn.Module):
 		else:
 			z1_target_embeds = self.pooler(z1_embeds, rand_day_indices)
 			z2_target_embeds = self.pooler(z2_embeds, rand_day_indices)
-		
-
 			  
 		# Reshape pooled embeds to BATCH_SIZE X 2 X EMBEDDING_SIZE
 		# First column is z1, second column is z2
@@ -332,7 +325,6 @@ class ContrastiveLearn(nn.Module):
 		else:
 			pooled_embeds = torch.concat((z1_target_embeds, z2_target_embeds), axis=0)
 			pooled_embeds = pooled_embeds.view(len(z1_target_embeds), 2, pooled_embeds.size(-1))
-		# print(pooled_embeds.shape)
 		
 		pooled_embeds = self.linear(pooled_embeds)
 		z1, z2 = pooled_embeds[:,0], pooled_embeds[:,1]
@@ -379,6 +371,7 @@ def finetune(args, model, train_dataset, val_dataset, lr, clmbr_save_path, clmbr
 	config = model.clmbr_model.config
 	optimizer = optim.Adam([p for n, p in model.named_parameters() if p.requires_grad], lr=lr)
 	best_val_loss = 9999999
+	train_output_df = pd.DataFrame()
 	val_output_df = pd.DataFrame()
 	best_epoch = 0
 	model_train_loss = []
@@ -386,14 +379,18 @@ def finetune(args, model, train_dataset, val_dataset, lr, clmbr_save_path, clmbr
 	for e in range(args.epochs):
 		model.train()
 		train_loss = []
+		train_preds = []
+		train_lbls = []
 		with DataLoader(train_dataset, model.config['num_first'], is_val=False, batch_size=model.config["batch_size"], device=args.device) as train_loader:
 			for batch in train_loader:
-				# Skip batches that only consist of one patient
+				# Skip batches that only consist of one patient - otherwise no negative samples are generated
 				if len(batch['pid']) == 1:
 					continue
 				else:
 					optimizer.zero_grad()
 					outputs = model(batch)
+					train_preds.extend(list(outputs['preds'].detach().clone().cpu().numpy()))
+					train_lbls.extend(list(outputs['labels'].detach().clone().cpu().numpy()))
 					loss = outputs["loss"]
 
 					loss.backward()
@@ -402,28 +399,41 @@ def finetune(args, model, train_dataset, val_dataset, lr, clmbr_save_path, clmbr
 		print('Training loss:',  np.sum(train_loss))
 		model_train_loss.append(np.sum(train_loss))
 		
+		# evaluate on validation set
 		val_preds, val_lbls, val_losses = evaluate_model(args, model, val_dataset)
 		scaled_val_loss = np.sum(val_losses)*model.temp
-		model_val_loss.append(scaled_val_loss)
+		model_val_loss.append(np.sum(val_losses))
+		
+		# Save train and val model predictions/labels
+		df = pd.DataFrame({'epoch':e,'preds':train_preds,'labels':train_lbls})
+		train_output_df = pd.concat((train_output_df,df),axis=0)
 		df = pd.DataFrame({'epoch':e,'preds':val_preds,'labels':val_lbls})
 		val_output_df = pd.concat((val_output_df,df),axis=0)
+		
+		#save current epoch model
 		os.makedirs(f'{clmbr_save_path}/{e}',exist_ok=True)
 		torch.save(clmbr_model.state_dict(), os.path.join(clmbr_save_path,f'{e}/best'))
 		shutil.copyfile(f'{clmbr_model_path}/info.json', f'{clmbr_save_path}/{e}/info.json')
-		
 		with open(f'{clmbr_save_path}/{e}/config.json', 'w') as f:
 			json.dump(config,f)			
+		
+		# save model as best model if condition met
 		if scaled_val_loss < best_val_loss:
 			best_val_loss = scaled_val_loss
 			best_epoch = e
 			best_model = copy.deepcopy(model.clmbr_model)
+	# write train and val loss/preds to csv
 	df = pd.DataFrame(model_train_loss)
-	df.to_csv(f'clmbr_save_path/train_loss.csv')
+	df.to_csv(f'{clmbr_save_path}/train_loss.csv')
 	df = pd.DataFrame(model_val_loss)
-	df.to_csv(f'clmbr_save_path/val_loss.csv')
+	df.to_csv(f'{clmbr_save_path}/val_loss.csv')
+	train_output_df.to_csv(f'{clmbr_save_path}/train_preds.csv', index=False)
 	val_output_df.to_csv(f'{clmbr_save_path}/val_preds.csv', index=False)
+	
+	# save best epoch for debugging 
 	with open(f'{clmbr_save_path}/best_epoch.txt', 'w') as f:
-		f.write(best_epoch)
+		f.write(f'{best_epoch}')
+		
 	return best_model, best_val_loss, val_output_df
 
 def evaluate_model(args, model, dataset):
