@@ -28,7 +28,7 @@ writer = SummaryWriter('./runs/cl_ete')
 
 from sklearn.model_selection import ParameterGrid
 #from torch.utils.data import DataLoader, Dataset
-
+from tqdm import tqdm
 
 parser = argparse.ArgumentParser()
 
@@ -363,7 +363,7 @@ def train(args, model, train_dataset, windows, lr, clmbr_save_path, clmbr_info_p
 		train_preds = []
 		train_lbls = []
 		with DataLoader(train_dataset, model.config['num_first'], is_val=False, batch_size=1, seed=args.seed, device=args.device) as train_loader:
-			for batch in train_loader:
+			for batch in tqdm(train_loader):
 					 
 				pid_df = windows.query('ehr_id==@batch["pid"][0]')
 				if len(pid_df) < 2:
@@ -444,7 +444,7 @@ def evaluate_model(args, model, data, windows):
 											 data, 
 											 data )
 			with DataLoader(dataset, model.config['num_first'], is_val=True, batch_size=1, seed=args.seed, device=args.device) as eval_loader:
-				for batch in eval_loader:
+				for batch in tqdm(eval_loader):
 					
 					pid_df = windows.query('ehr_id==@batch["pid"][0]')
 					if len(pid_df) < 2:
