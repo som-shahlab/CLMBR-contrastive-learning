@@ -150,13 +150,17 @@ def get_window_pairs(tl, windows):
 		win_1_end = windows.iloc[i]['end_day_idx']+1
 		win_2_start = windows.iloc[i+1]['start_day_idx']
 		win_2_end = windows.iloc[i+1]['end_day_idx']+1
-
-		window_1_data = tl[0][win_1_start:win_1_end]
-		window_2_data = tl[0][win_2_start:win_2_end]
+		
+		time_deltas = torch.vstack((tl[0][win_1_start:win_1_end,795:],tl[0][win_2_start:win_2_end,795:]))
+		
+		window_1_data = tl[0][win_1_start:win_1_end,:795]
+		window_2_data = tl[0][win_2_start:win_2_end,:795]
 		# print(window_1_data)
 		# print(window_2_data)
 		lbl = np.random.choice([0,1])
 		p_data = torch.cat([window_1_data,window_2_data]) if lbl == 1 else torch.cat([window_2_data,window_1_data])
+		p_data = torch.cat([p_data,time_deltas], dim=-1)
+		print(p_data.shape)
 		pairs.append(p_data)
 		labels.append(lbl)
 

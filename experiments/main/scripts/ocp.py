@@ -260,7 +260,7 @@ class ContrastiveLearn(nn.Module):
 
 	def forward(self, batch, windows, is_train=True):
 		outputs = dict()
-		
+
 		# For patient timeline in batch get window pair embeddings
 		embeds, labels = self.clmbr_model.timeline_model(batch["rnn"], windows)
 		labels = labels.to(self.device)
