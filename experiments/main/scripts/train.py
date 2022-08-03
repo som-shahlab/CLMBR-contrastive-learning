@@ -16,7 +16,7 @@ from ehr_ml.clmbr import convert_patient_data
 from sklearn.model_selection import ParameterGrid
 
 parser = argparse.ArgumentParser(
-    description='Train CLMBR model'
+    description='Train baseline CLMBR model'
 )
 
 parser.add_argument(

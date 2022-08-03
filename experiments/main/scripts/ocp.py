@@ -268,9 +268,7 @@ class ContrastiveLearn(nn.Module):
 		# Use pooler to get target embeddings
 		target_embeds = self.pooler(embeds)
 		
-		preds = self.linear(target_embeds)
-		preds = preds.squeeze(-1)
-		preds = torch.mean(preds, dim=1)
+		preds = self.linear(target_embeds[:,-1,:])
 
 # 		# Compute loss
 		outputs['loss'] = self.criterion(preds,labels)
@@ -412,7 +410,7 @@ def train(args, model, train_dataset, windows, lr, clmbr_save_path, clmbr_info_p
 		print('Epoch train loss', np.sum(train_loss))
 		print('Epoch val loss', val_loss)
 		# Trigger early stopping if model hasn't improved for awhile
-		if early_stop(scaled_val_loss):
+		if early_stop(val_loss):
 			print(f'Early stopping at epoch {e}')
 			break
 		

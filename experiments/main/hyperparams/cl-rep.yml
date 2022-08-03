@@ -12,3 +12,5 @@ temp:
 - 0.1
 pool:
 - 'mean_rep'
+- 'rand_day'
+- 'diff_pat'

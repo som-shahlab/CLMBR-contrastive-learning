@@ -54,22 +54,7 @@ parser.add_argument(
 )
 parser.set_defaults(has_birth_datetime=True)
 
-def append_extra_task(args, df, task):
-	# credentials, _ = google.auth.default()
-	query = f'SELECT * FROM {args.dataset_project}.{args.et_dataset}.{task}_cohort'
-	et_cohort_df = pd.read_gbq(query, dialect='standard')
-	temp_df = df.merge(et_cohort_df, on='person_id', how='inner')
-	temp_df['start_date'] = pd.to_datetime(temp_df['start_date'], format='%Y-%m-%d')
-	temp_df = temp_df.loc[temp_df.start_date > temp_df.admit_date]
-	pat_ids = list(temp_df['person_id'])
-	df[task] = 0
-	df[task] = df[task].mask(df.person_id.isin(pat_ids), 1)
-	return df
-
-
 if __name__ == "__main__":
-	
-	extra_tasks = ['sudden_cardiac_death', 'stroke', 'bladder_cancer', 'breast_cancer', 'acute_renal_failure', 'acute_myocardial_infarction', 'diabetic_ketoacidosis', 'edema', 'hyperkylemia', 'renal_cancer', 'revascularization']
 
 	args = parser.parse_args()
 	cohort = BQAdmissionRollupCohort(**args.__dict__)
@@ -95,8 +80,7 @@ if __name__ == "__main__":
 	cohort_df = patient_split_cv(
 		cohort_df, patient_col="person_id", test_frac=0.1, nfold=10, seed=657
 	)
-	for et in extra_tasks:
-		cohort_df = append_extra_task(args, cohort_df, et)
+
 	cohort_df['death_date'] = pd.to_datetime(cohort_df['death_date'])
 	print(cohort_df.dtypes)
 	

@@ -23,11 +23,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from torch.utils.tensorboard import SummaryWriter
-writer = SummaryWriter('./runs/cl_ete')
 
 from sklearn.model_selection import ParameterGrid
-#from torch.utils.data import DataLoader, Dataset
+from tqdm import tqdm
 
 
 parser = argparse.ArgumentParser()
@@ -241,46 +239,170 @@ class Pooler(nn.Module):
 		self.pooler = pooler
 		self.device = device if device is not None else 'cuda:0' if torch.cuda.is_available() else 'cpu'
         
-	def forward(self, embeds, day_indices=None):
-		# Only CLS style pooling for now
+	def forward(self, embeds, embeds_2=None, day_indices=None, pids=None):
 		if self.pooler == 'mean_rep':
 			# Generate positive pairs using mean embedding of both augmented timelines
-			return torch.mean(embeds,1,True)
+			z1_mean_embeds = torch.mean(embeds,1,True)
+			z2_mean_embeds = torch.mean(embeds_2,1,True)
+			z1_out = torch.tensor([]).to(self.device)
+			z2_out = torch.tensor([]).to(self.device)
+			labels = []
+			pat_info_df = pd.DataFrame()
+			for i, e in enumerate(z1_mean_embeds):
+				l_pair_id = []
+				r_pair_id = []
+				l_pair_idx = []
+				r_pair_idx = []
+				l_pair_max_idx = []
+				r_pair_max_idx = []
+				
+				l_pair_id.append(pids[i])
+				r_pair_id.append(pids[i])
+				l_pair_idx.append('n/a')
+				r_pair_idx.append('n/a')
+				l_pair_max_idx.append(len(e))
+				r_pair_max_idx.append(len(e))
+				z1_out = torch.concat((z1_out, torch.reshape(e, (1,1,embeds.shape[-1]))), 0)
+				z2_out = torch.concat((z2_out, torch.reshape(z2_mean_embeds[i], (1,1,embeds.shape[-1]))), 0)
+				labels.append(1)
+				neg_embed_idx = [j for j in list(np.arange(len(z2_mean_embeds))) if j != i]
+				if len(neg_embed_idx) > 5:
+					neg_embed_idx = np.random.choice(neg_embed_idx, 5)
+				for j in neg_embed_idx:				
+					neg_embeds = z2_mean_embeds[j]
+					z1_out = torch.concat((z1_out, torch.reshape(e, (1,1,embeds.shape[-1]))), 0)
+					neg_idx = np.random.randint(0, neg_embeds.shape[0])
+					z2_out = torch.concat((z2_out, torch.reshape(neg_embeds[neg_idx], (1,1,embeds.shape[-1]))), 0)
+					labels.append(0)
+					l_pair_id.append(pids[i])
+					r_pair_id.append(pids[j])
+					l_pair_idx.append('n/a')
+					r_pair_idx.append('n/a')
+					l_pair_max_idx.append(len(e))
+					r_pair_max_idx.append(len(neg_embeds))
+				df = pd.DataFrame({'left_id':l_pair_id, 'left_idx':l_pair_idx, 'left_max_idx':l_pair_max_idx, 'right_id':r_pair_id, 'right_idx':r_pair_idx, 'right_max_idx':r_pair_max_idx})
+				pat_info_df =pd.concat((pat_info_df,df))
+			labels = torch.tensor(labels).float().to(self.device)
+			return z1_out, z2_out, labels, pat_info_df
+				
 		elif self.pooler == 'rand_day':
 			# Generate positive pairs using the same random day index for both augmented timelines
 			outputs = torch.tensor([]).to(self.device)
+			z1_out = torch.tensor([]).to(self.device)
+			z2_out = torch.tensor([]).to(self.device)
+			pat_info_df = pd.DataFrame()
+			labels = []
 			for i, e in enumerate(embeds):
-				outputs = torch.concat((outputs, e[day_indices[i]]), 0)
-			outputs = torch.reshape(outputs, (embeds.shape[0], 1, embeds.shape[-1]))
-			return outputs
+				l_pair_id = []
+				r_pair_id = []
+				l_pair_idx = []
+				r_pair_idx = []
+				l_pair_max_idx = []
+				r_pair_max_idx = []
+				
+				l_pair_id.append(pids[i])
+				r_pair_id.append(pids[i])
+				l_pair_idx.append(day_indices[i])
+				r_pair_idx.append(day_indices[i])
+				l_pair_max_idx.append(len(e))
+				r_pair_max_idx.append(len(e))
+				z1_out = torch.concat((z1_out, torch.reshape(e[day_indices[i]], (1,1,embeds.shape[-1]))), 0)
+				z2_out = torch.concat((z2_out, torch.reshape(embeds_2[i][day_indices[i]],(1,1,embeds.shape[-1]))),0)
+				labels.append(1)
+				neg_embed_idx = [j for j in list(np.arange(len(embeds))) if j != i]
+				if len(neg_embed_idx) > 5:
+					neg_embed_idx = np.random.choice(neg_embed_idx, 5)
+				for j in neg_embed_idx:		
+					neg_embeds = embeds_2[j]
+					z1_out = torch.concat((z1_out, torch.reshape(e[day_indices[i]], (1,1,embeds.shape[-1]))), 0)
+					neg_idx = np.random.randint(0, neg_embeds.shape[0])
+					z2_out = torch.concat((z2_out, torch.reshape(neg_embeds[neg_idx], (1,1,embeds.shape[-1]))), 0)
+					labels.append(0)
+					l_pair_id.append(pids[i])
+					r_pair_id.append(pids[j])
+					l_pair_idx.append(day_indices[i])
+					r_pair_idx.append(neg_idx)
+					l_pair_max_idx.append(len(e))
+					r_pair_max_idx.append(len(neg_embeds))
+				df = pd.DataFrame({'left_id':l_pair_id, 'left_idx':l_pair_idx, 'left_max_idx':l_pair_max_idx, 'right_id':r_pair_id, 'right_idx':r_pair_idx, 'right_max_idx':r_pair_max_idx})
+				pat_info_df =pd.concat((pat_info_df,df))
+			labels = torch.tensor(labels).float().to(self.device)
+			return z1_out, z2_out, labels, pat_info_df
 		elif self.pooler == 'diff_pat':
 			# Generate positive pairs using two random day embeddings from one patient timeline
 			z1_out = torch.tensor([]).to(self.device)
 			z2_out = torch.tensor([]).to(self.device)
+			pat_info_df = pd.DataFrame()
 			skipped = 0
+			labels = []
 			for i, e in enumerate(embeds):
 				if e.shape[0] < 4:
 					skipped += 1
 				else:
+					l_pair_id = []
+					r_pair_id = []
+					l_pair_idx = []
+					r_pair_idx = []
+					l_pair_max_idx = []
+					r_pair_max_idx = []
+					
 					z1_ind = np.random.randint(1, e.shape[0]-2)
 					z2_ind = np.random.randint(z1_ind+1, e.shape[0]-1)
-					z1_out = torch.concat((z1_out, e[z1_ind]), 0)
-					z2_out = torch.concat((z2_out, e[z2_ind]), 0)
-			z1_out = torch.reshape(z1_out, (embeds.shape[0]-skipped, 1, embeds.shape[-1]))
-			z2_out = torch.reshape(z2_out, (embeds.shape[0]-skipped, 1, embeds.shape[-1]))
-			return z1_out, z2_out
+					z1_out = torch.concat((z1_out, torch.reshape(e[z1_ind], (1,1,embeds.shape[-1]))), 0)
+					z2_out = torch.concat((z2_out, torch.reshape(e[z2_ind], (1,1,embeds.shape[-1]))), 0)
+					labels.append(1)
+					l_pair_id.append(pids[i])
+					r_pair_id.append(pids[i])
+					l_pair_idx.append(z1_ind)
+					r_pair_idx.append(z2_ind)
+					l_pair_max_idx.append(len(e))
+					r_pair_max_idx.append(len(e))
+					neg_embed_idx = [j for j in list(np.arange(len(embeds))) if j != i]
+					if len(neg_embed_idx) > 5:
+						neg_embed_idx = np.random.choice(neg_embed_idx, 5)
+					for j in neg_embed_idx:				
+						neg_embeds = embeds[j]
+						z1_out = torch.concat((z1_out, torch.reshape(e[z1_ind], (1,1,embeds.shape[-1]))), 0)
+						neg_idx = np.random.randint(0, neg_embeds.shape[0])
+						z2_out = torch.concat((z2_out, torch.reshape(neg_embeds[neg_idx], (1,1,embeds.shape[-1]))), 0)
+						labels.append(0)
+						l_pair_id.append(pids[i])
+						r_pair_id.append(pids[j])
+						l_pair_idx.append(z1_ind)
+						r_pair_idx.append(neg_idx)
+						l_pair_max_idx.append(len(e))
+						r_pair_max_idx.append(len(neg_embeds))
+					df = pd.DataFrame({'left_id':l_pair_id, 'left_idx':l_pair_idx, 'left_max_idx':l_pair_max_idx, 'right_id':r_pair_id, 'right_idx':r_pair_idx, 'right_max_idx':r_pair_max_idx})
+					pat_info_df = pd.concat((pat_info_df,df))
+			labels = torch.tensor(labels).float().to(self.device)
+			if z1_out.shape[0] == 0:
+				return None, None, None, pd.DataFrame()
+			return z1_out, z2_out, labels, pat_info_df
 		elif self.pooler == 'trivial':
-			# Generate positive pairs using two consecutive day embeddings
+			# Generate positive pairs using the same embeding with a bit of gaussian noise injected
 			# Used for sanity check on task difficulty
+			# add in patient_id saving and index saving for downstream error analysis
 			z1_out = torch.tensor([]).to(self.device)
 			z2_out = torch.tensor([]).to(self.device)
+			labels = []
 			for i, e in enumerate(embeds):
 				idx = np.random.randint(0,e.shape[0]-1)
-				z1_out = torch.concat((z1_out, e[idx]), 0)
-				z2_out = torch.concat((z2_out, e[idx+1]), 0)
-			z1_out = torch.reshape(z1_out, (embeds.shape[0], 1, embeds.shape[-1]))
-			z2_out = torch.reshape(z2_out, (embeds.shape[0], 1, embeds.shape[-1]))
-			return z1_out, z2_out
+				z1_out = torch.concat((z1_out, torch.reshape(e[idx], (1,1,embeds.shape[-1]))), 0)
+				z2_out = torch.concat((z2_out, torch.reshape(e[idx] + (0.01**0.5)*torch.randn_like(e[idx]), (1,1,embeds.shape[-1]))), 0)
+				labels.append(1)
+				neg_embed_idx = [j for j in list(np.arange(len(embeds))) if j != i]
+				if len(neg_embed_idx) > 5:
+					neg_embed_idx = np.random.choice(neg_embed_idx, 1)
+				for j in neg_embed_idx:				
+					neg_embeds = embeds[j]
+					z1_out = torch.concat((z1_out, torch.reshape(e[idx], (1,1,embeds.shape[-1]))), 0)
+					neg_idx = np.random.randint(0, neg_embeds.shape[0])
+					z2_out = torch.concat((z2_out, torch.reshape(neg_embeds[neg_idx], (1,1,embeds.shape[-1]))), 0)
+					labels.append(0)
+			
+			labels = torch.tensor(labels).float().to(self.device)
+
+			return z1_out, z2_out, labels
 
 class ContrastiveLearn(nn.Module):
 	"""
@@ -294,46 +416,53 @@ class ContrastiveLearn(nn.Module):
 		self.pooler = Pooler(pooler, device)
 		self.temp = temp
 		self.sim = Similarity(temp)
-		self.criterion = nn.CrossEntropyLoss()
+		self.criterion = nn.BCEWithLogitsLoss()
 		self.device = device if device is not None else 'cuda:0' if torch.cuda.is_available() else 'cpu'
 
 	def forward(self, batch, is_train=True):
 		outputs = dict()
-
+		
 		# For patient timeline in batch get CLMBR embedding
 		z1_embeds = self.clmbr_model.timeline_model(batch["rnn"])
 
 		# Run batch through CLMBR again to get different masked embedding for positive pairs
 		z2_embeds = self.clmbr_model.timeline_model(batch["rnn"])
-		
+
 		# Flatten embeddings
 		rand_day_indices = None
 		if self.pooler.pooler == 'rand_day':
 			rand_day_indices = []
 			for di in batch['day_index']:
 				rand_day_indices.append(random.choice(di))
+		
 		# Use pooler to get target embeddings
-		z1_target_embeds = self.pooler(z1_embeds, rand_day_indices)
-		z2_target_embeds = self.pooler(z2_embeds, rand_day_indices)
-
+		if self.pooler.pooler == 'diff_pat' or self.pooler.pooler == 'trivial':
+			z1_target_embeds, z2_target_embeds, labels, pat_df = self.pooler(z1_embeds, pids=batch['pid'])
+		else:
+			z1_target_embeds, z2_target_embeds, labels, pat_df = self.pooler(z1_embeds, z2_embeds, rand_day_indices, pids=batch['pid'])
+		
+		if z1_target_embeds is None:
+			return None
 		# Reshape pooled embeds to BATCH_SIZE X 2 X EMBEDDING_SIZE
 		# First column is z1, second column is z2
-		pooled_embeds = torch.concat((z1_target_embeds, z2_target_embeds), axis=0)
-		pooled_embeds = pooled_embeds.view(len(batch['pid']), 2, pooled_embeds.size(-1))
+		if len(z1_target_embeds) == 0:
+			pooled_embeds = torch.zeros((1,2,800)).to(self.device)
+		else:
+			pooled_embeds = torch.concat((z1_target_embeds, z2_target_embeds), axis=1)
+
+			# pooled_embeds = pooled_embeds.view(len(z1_target_embeds), 2, pooled_embeds.size(-1))
 		
 		pooled_embeds = self.linear(pooled_embeds)
 		z1, z2 = pooled_embeds[:,0], pooled_embeds[:,1]
-
-		# Get cosine similarity
-		cos_sim = self.sim(z1.unsqueeze(1), z2.unsqueeze(0))
-
-		# Generate labels
-		labels = torch.arange(cos_sim.size(0)).long().to(self.device)
 		
+		# Get cosine similarity
+		cos_sim = self.sim(z1, z2)
+
 		# Compute loss
 		outputs['loss'] = self.criterion(cos_sim,labels)
 		outputs['preds'] = cos_sim
 		outputs['labels'] = labels
+		outputs['pat_df'] = pat_df
 		return outputs
 
 class EarlyStopping():
@@ -374,33 +503,41 @@ def load_data(args, clmbr_hp):
 
 	return train_data, val_data
         
-def train(args, model, train_dataset, val_dataset, lr, clmbr_save_path, clmbr_info_path, bl_int, cl_int):
+def train(args, model, train_dataset, val_dataset, lr, clmbr_save_path, clmbr_model_path):
 	"""
-	Train CLMBR model using CL objective.
+	Train CL foundational model
 	"""
 	model.train()
-	config = model.config
+	config = model.clmbr_model.config
 	optimizer = optim.Adam([p for n, p in model.named_parameters() if p.requires_grad], lr=lr)
-	best_val_loss = 9999999
 	early_stop = EarlyStopping(args.patience)
-	train_output_df = pd.DataFrame()
-	val_output_df = pd.DataFrame()
-	model_train_loss = []
-	model_val_loss = []
+	best_val_loss = 9999999
 	best_epoch = 0
+	
 	for e in range(args.epochs):
 		model.train()
+		pat_info_df = pd.DataFrame()
+		model_train_loss_df = pd.DataFrame()
+		model_val_loss_df = pd.DataFrame()
 		train_loss = []
 		train_preds = []
 		train_lbls = []
 		with DataLoader(train_dataset, model.config['num_first'], is_val=False, batch_size=model.config["batch_size"], device=args.device) as train_loader:
-			for batch in train_loader:
-				# Skip batches that only consist of one patient
-				if len(batch['pid']) == 1:
+			for batch in tqdm(train_loader):
+				# Skip batches that only consist of one patient - otherwise no negative samples are generated
+				if len(batch['pid']) < 2:
 					continue
 				else:
 					optimizer.zero_grad()
 					outputs = model(batch)
+					if outputs is not None:
+						df = outputs['pat_df']
+						df['epoch'] = e
+						df['phase'] = 'train'
+					
+					pat_info_df = pd.concat((pat_info_df,df))
+					if outputs is None:
+						continue
 					train_preds.extend(list(outputs['preds'].detach().clone().cpu().numpy()))
 					train_lbls.extend(list(outputs['labels'].detach().clone().cpu().numpy()))
 					loss = outputs["loss"]
@@ -409,48 +546,52 @@ def train(args, model, train_dataset, val_dataset, lr, clmbr_save_path, clmbr_in
 					optimizer.step()
 					train_loss.append(loss.item())
 		print('Training loss:',  np.sum(train_loss))
-		model_train_loss.append(np.sum(train_loss))
+		df = pd.DataFrame({'loss':train_loss})
+		df['epoch'] = e
+		df.to_csv(f'{clmbr_save_path}/{e}/train_loss.csv')
 		
 		# evaluate on validation set
-		val_preds, val_lbls, val_losses = evaluate_model(args, model, val_dataset)
+		val_preds, val_lbls, val_losses, df = evaluate_model(args, model, val_dataset, e)
+		df['epoch'] = e
+		df['phase'] = 'val'
+		pat_info_df = pd.concat((pat_info_df,df))
 		scaled_val_loss = np.sum(val_losses)*model.temp
-		model_val_loss.append(np.sum(val_losses))
+		df = pd.DataFrame({'loss':val_losses})
+		df['epoch'] = e
+		df.to_csv(f'{clmbr_save_path}/{e}/val_loss.csv')
 		
 		# Save train and val model predictions/labels
 		df = pd.DataFrame({'epoch':e,'preds':train_preds,'labels':train_lbls})
-		train_output_df = pd.concat((train_output_df,df),axis=0)
+		df.to_csv(f'{clmbr_save_path}/{e}/train_preds.csv', index=False)
 		df = pd.DataFrame({'epoch':e,'preds':val_preds,'labels':val_lbls})
-		val_output_df = pd.concat((val_output_df,df),axis=0)
+		df.to_csv(f'{clmbr_save_path}/{e}/val_preds.csv', index=False)
 		
 		#save current epoch model
 		os.makedirs(f'{clmbr_save_path}/{e}',exist_ok=True)
 		torch.save(clmbr_model.state_dict(), os.path.join(clmbr_save_path,f'{e}/best'))
-		shutil.copyfile(f'{clmbr_info_path}', f'{clmbr_save_path}/{e}/info.json')
+		shutil.copyfile(f'{clmbr_model_path}/info.json', f'{clmbr_save_path}/{e}/info.json')
+		pat_info_df.to_csv(f'{clmbr_save_path}/{e}/pat_info.csv', index=False)
 		with open(f'{clmbr_save_path}/{e}/config.json', 'w') as f:
-			json.dump(config,f)		
-			
-		# save model as best model if condition met
+			json.dump(config,f)			
+		
+		#save model as best model if condition met
 		if scaled_val_loss < best_val_loss:
 			best_val_loss = scaled_val_loss
 			best_epoch = e
 			best_model = copy.deepcopy(model.clmbr_model)
+		
 		# Trigger early stopping if model hasn't improved for awhile
 		if early_stop(scaled_val_loss):
 			print(f'Early stopping at epoch {e}')
 			break
-	# write train and val loss/preds to csv
-	df = pd.DataFrame(model_train_loss)
-	df.to_csv(f'{clmbr_save_path}/train_loss.csv')
-	df = pd.DataFrame(model_val_loss)
-	df.to_csv(f'{clmbr_save_path}/val_loss.csv')
-	train_output_df.to_csv(f'{clmbr_save_path}/train_preds.csv', index=False)
-	val_output_df.to_csv(f'{clmbr_save_path}/val_preds.csv', index=False)
+	
+	# save best epoch for debugging 
 	with open(f'{clmbr_save_path}/best_epoch.txt', 'w') as f:
 		f.write(f'{best_epoch}')
 		
-	return best_model, best_val_loss, val_output_df
+	return best_model, best_val_loss, best_epoch
 
-def evaluate_model(args, model, dataset):
+def evaluate_model(args, model, dataset, e):
 	model.eval()
 	
 	criterion = nn.CrossEntropyLoss()
@@ -458,16 +599,24 @@ def evaluate_model(args, model, dataset):
 	preds = []
 	lbls = []
 	losses = []
+	pat_info_df = pd.DataFrame()
 	with torch.no_grad():
 		with DataLoader(dataset, model.config['num_first'], is_val=True, batch_size=model.config['batch_size'], seed=args.seed, device=args.device) as eval_loader:
-			for batch in eval_loader:
+			for batch in tqdm(eval_loader):
+				if len(batch['pid']) < 2:
+					continue
 				outputs = model(batch)
+				if outputs is None:
+					continue
 				loss = outputs["loss"]
 				losses.append(loss.item())
 				preds.extend(list(outputs['preds'].cpu().numpy()))
 				lbls.extend(list(outputs['labels'].cpu().numpy()))
+				df = outputs['pat_df']
+
+				pat_info_df = pd.concat((pat_info_df,df))
 	print('Validation loss:',  np.sum(losses))
-	return preds, lbls, losses
+	return preds, lbls, losses, pat_info_df
 
 def get_config(hp):
     config = {'b1': 0.9,
@@ -513,7 +662,7 @@ if __name__ == '__main__':
 		ParameterGrid(
 			yaml.load(
 				open(
-					f"{os.path.join(args.hparams_fpath,'cl-ete')}.yml",
+					f"{os.path.join(args.hparams_fpath,'cl-rep')}.yml",
 					'r'
 				),
 				Loader=yaml.FullLoader
@@ -561,8 +710,7 @@ if __name__ == '__main__':
 			model.train()
 
 			# Run finetune procedure
-			clmbr_model, val_loss, val_df = train(args, model, train_dataset, val_dataset, float(cl_hp['lr']), clmbr_save_path, clmbr_info_path, i, j)
-			writer.flush()
+			clmbr_model, val_loss, best_epoch = train(args, model, train_dataset, val_dataset, float(cl_hp['lr']), clmbr_save_path, clmbr_info_path)
 			clmbr_model.freeze()
 			if val_loss < best_val_loss:
 				print('Saving as best trained model...')
@@ -583,6 +731,6 @@ if __name__ == '__main__':
 			shutil.copyfile(f'{clmbr_info_path}', f'{clmbr_save_path}/info.json')
 			with open(f'{clmbr_save_path}/config.json', 'w') as f:
 				json.dump(config,f)
-writer.close()
+
         
     

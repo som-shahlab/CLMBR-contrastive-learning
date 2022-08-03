@@ -155,11 +155,9 @@ def get_window_pairs(tl, windows):
 		
 		window_1_data = tl[0][win_1_start:win_1_end,:795]
 		window_2_data = tl[0][win_2_start:win_2_end,:795]
-		# print(window_1_data)
-		# print(window_2_data)
 		lbl = np.random.choice([0,1])
 		p_data = torch.cat([window_1_data,window_2_data]) if lbl == 1 else torch.cat([window_2_data,window_1_data])
-		p_data = torch.cat([p_data,time_deltas], dim=-1)
+		p_data = torch.cat([p_data,torch.zeros_like(time_deltas)], dim=-1)
 		pairs.append(p_data)
 		labels.append(lbl)
 

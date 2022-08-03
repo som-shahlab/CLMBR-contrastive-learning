@@ -253,10 +253,15 @@ class Pooler(nn.Module):
 				r_pair_id = []
 				l_pair_idx = []
 				r_pair_idx = []
+				l_pair_max_idx = []
+				r_pair_max_idx = []
+				
 				l_pair_id.append(pids[i])
 				r_pair_id.append(pids[i])
-				l_pair_idx.append(-1)
-				r_pair_idx.append(-1)
+				l_pair_idx.append('n/a')
+				r_pair_idx.append('n/a')
+				l_pair_max_idx.append(len(e))
+				r_pair_max_idx.append(len(e))
 				z1_out = torch.concat((z1_out, torch.reshape(e, (1,1,embeds.shape[-1]))), 0)
 				z2_out = torch.concat((z2_out, torch.reshape(z2_mean_embeds[i], (1,1,embeds.shape[-1]))), 0)
 				labels.append(1)
@@ -271,9 +276,11 @@ class Pooler(nn.Module):
 					labels.append(0)
 					l_pair_id.append(pids[i])
 					r_pair_id.append(pids[j])
-					l_pair_idx.append(-1)
-					r_pair_idx.append(-1)
-				df = pd.DataFrame({'left_id':l_pair_id, 'left_idx':l_pair_idx, 'right_id':r_pair_id, 'right_idx':r_pair_idx})
+					l_pair_idx.append('n/a')
+					r_pair_idx.append('n/a')
+					l_pair_max_idx.append(len(e))
+					r_pair_max_idx.append(len(neg_embeds))
+				df = pd.DataFrame({'left_id':l_pair_id, 'left_idx':l_pair_idx, 'left_max_idx':l_pair_max_idx, 'right_id':r_pair_id, 'right_idx':r_pair_idx, 'right_max_idx':r_pair_max_idx})
 				pat_info_df =pd.concat((pat_info_df,df))
 			labels = torch.tensor(labels).float().to(self.device)
 			return z1_out, z2_out, labels, pat_info_df
@@ -290,10 +297,15 @@ class Pooler(nn.Module):
 				r_pair_id = []
 				l_pair_idx = []
 				r_pair_idx = []
+				l_pair_max_idx = []
+				r_pair_max_idx = []
+				
 				l_pair_id.append(pids[i])
 				r_pair_id.append(pids[i])
 				l_pair_idx.append(day_indices[i])
 				r_pair_idx.append(day_indices[i])
+				l_pair_max_idx.append(len(e))
+				r_pair_max_idx.append(len(e))
 				z1_out = torch.concat((z1_out, torch.reshape(e[day_indices[i]], (1,1,embeds.shape[-1]))), 0)
 				z2_out = torch.concat((z2_out, torch.reshape(embeds_2[i][day_indices[i]],(1,1,embeds.shape[-1]))),0)
 				labels.append(1)
@@ -310,7 +322,9 @@ class Pooler(nn.Module):
 					r_pair_id.append(pids[j])
 					l_pair_idx.append(day_indices[i])
 					r_pair_idx.append(neg_idx)
-				df = pd.DataFrame({'left_id':l_pair_id, 'left_idx':l_pair_idx, 'right_id':r_pair_id, 'right_idx':r_pair_idx})
+					l_pair_max_idx.append(len(e))
+					r_pair_max_idx.append(len(neg_embeds))
+				df = pd.DataFrame({'left_id':l_pair_id, 'left_idx':l_pair_idx, 'left_max_idx':l_pair_max_idx, 'right_id':r_pair_id, 'right_idx':r_pair_idx, 'right_max_idx':r_pair_max_idx})
 				pat_info_df =pd.concat((pat_info_df,df))
 			labels = torch.tensor(labels).float().to(self.device)
 			return z1_out, z2_out, labels, pat_info_df
@@ -329,6 +343,8 @@ class Pooler(nn.Module):
 					r_pair_id = []
 					l_pair_idx = []
 					r_pair_idx = []
+					l_pair_max_idx = []
+					r_pair_max_idx = []
 					
 					z1_ind = np.random.randint(1, e.shape[0]-2)
 					z2_ind = np.random.randint(z1_ind+1, e.shape[0]-1)
@@ -339,6 +355,8 @@ class Pooler(nn.Module):
 					r_pair_id.append(pids[i])
 					l_pair_idx.append(z1_ind)
 					r_pair_idx.append(z2_ind)
+					l_pair_max_idx.append(len(e))
+					r_pair_max_idx.append(len(e))
 					neg_embed_idx = [j for j in list(np.arange(len(embeds))) if j != i]
 					if len(neg_embed_idx) > 5:
 						neg_embed_idx = np.random.choice(neg_embed_idx, 5)
@@ -352,11 +370,13 @@ class Pooler(nn.Module):
 						r_pair_id.append(pids[j])
 						l_pair_idx.append(z1_ind)
 						r_pair_idx.append(neg_idx)
-				df = pd.DataFrame({'left_id':l_pair_id, 'left_idx':l_pair_idx, 'right_id':r_pair_id, 'right_idx':r_pair_idx})
-				pat_info_df = pd.concat((pat_info_df,df))
+						l_pair_max_idx.append(len(e))
+						r_pair_max_idx.append(len(neg_embeds))
+					df = pd.DataFrame({'left_id':l_pair_id, 'left_idx':l_pair_idx, 'left_max_idx':l_pair_max_idx, 'right_id':r_pair_id, 'right_idx':r_pair_idx, 'right_max_idx':r_pair_max_idx})
+					pat_info_df = pd.concat((pat_info_df,df))
 			labels = torch.tensor(labels).float().to(self.device)
 			if z1_out.shape[0] == 0:
-				return None, None, None, None
+				return None, None, None, pd.DataFrame()
 			return z1_out, z2_out, labels, pat_info_df
 		elif self.pooler == 'trivial':
 			# Generate positive pairs using the same embeding with a bit of gaussian noise injected
@@ -492,14 +512,13 @@ def finetune(args, model, train_dataset, val_dataset, lr, clmbr_save_path, clmbr
 	optimizer = optim.Adam([p for n, p in model.named_parameters() if p.requires_grad], lr=lr)
 	early_stop = EarlyStopping(args.patience)
 	best_val_loss = 9999999
-	train_output_df = pd.DataFrame()
-	val_output_df = pd.DataFrame()
 	best_epoch = 0
-	model_train_loss_df = pd.DataFrame()
-	model_val_loss_df = pd.DataFrame()
-	pat_info_df = pd.DataFrame()
+	
 	for e in range(args.epochs):
 		model.train()
+		pat_info_df = pd.DataFrame()
+		model_train_loss_df = pd.DataFrame()
+		model_val_loss_df = pd.DataFrame()
 		train_loss = []
 		train_preds = []
 		train_lbls = []
@@ -511,10 +530,11 @@ def finetune(args, model, train_dataset, val_dataset, lr, clmbr_save_path, clmbr
 				else:
 					optimizer.zero_grad()
 					outputs = model(batch)
-					df = outputs['pat_df']
-					df['epoch'] = e
-					df['phase'] = 'train'
-					print(df)
+					if outputs is not None:
+						df = outputs['pat_df']
+						df['epoch'] = e
+						df['phase'] = 'train'
+					
 					pat_info_df = pd.concat((pat_info_df,df))
 					if outputs is None:
 						continue
@@ -528,28 +548,29 @@ def finetune(args, model, train_dataset, val_dataset, lr, clmbr_save_path, clmbr
 		print('Training loss:',  np.sum(train_loss))
 		df = pd.DataFrame({'loss':train_loss})
 		df['epoch'] = e
-		model_train_loss_df = pd.concat((model_train_loss_df,df))
+		df.to_csv(f'{clmbr_save_path}/{e}/train_loss.csv')
 		
 		# evaluate on validation set
-		val_preds, val_lbls, val_losses, df = evaluate_model(args, model, val_dataset)
+		val_preds, val_lbls, val_losses, df = evaluate_model(args, model, val_dataset, e)
 		df['epoch'] = e
 		df['phase'] = 'val'
 		pat_info_df = pd.concat((pat_info_df,df))
 		scaled_val_loss = np.sum(val_losses)*model.temp
 		df = pd.DataFrame({'loss':val_losses})
 		df['epoch'] = e
-		model_val_loss_df = pd.concat((model_val_loss_df,df)) 
+		df.to_csv(f'{clmbr_save_path}/{e}/val_loss.csv')
 		
 		# Save train and val model predictions/labels
 		df = pd.DataFrame({'epoch':e,'preds':train_preds,'labels':train_lbls})
-		train_output_df = pd.concat((train_output_df,df),axis=0)
+		df.to_csv(f'{clmbr_save_path}/{e}/train_preds.csv', index=False)
 		df = pd.DataFrame({'epoch':e,'preds':val_preds,'labels':val_lbls})
-		val_output_df = pd.concat((val_output_df,df),axis=0)
+		df.to_csv(f'{clmbr_save_path}/{e}/val_preds.csv', index=False)
 		
 		#save current epoch model
 		os.makedirs(f'{clmbr_save_path}/{e}',exist_ok=True)
 		torch.save(clmbr_model.state_dict(), os.path.join(clmbr_save_path,f'{e}/best'))
 		shutil.copyfile(f'{clmbr_model_path}/info.json', f'{clmbr_save_path}/{e}/info.json')
+		pat_info_df.to_csv(f'{clmbr_save_path}/{e}/pat_info.csv', index=False)
 		with open(f'{clmbr_save_path}/{e}/config.json', 'w') as f:
 			json.dump(config,f)			
 		
@@ -563,20 +584,14 @@ def finetune(args, model, train_dataset, val_dataset, lr, clmbr_save_path, clmbr
 		if early_stop(scaled_val_loss):
 			print(f'Early stopping at epoch {e}')
 			break
-	# write train and val loss/preds to csv
-	model_train_loss_df.to_csv(f'{clmbr_save_path}/train_loss.csv')
-	model_val_loss_df.to_csv(f'{clmbr_save_path}/val_loss.csv')
-	train_output_df.to_csv(f'{clmbr_save_path}/train_preds.csv', index=False)
-	val_output_df.to_csv(f'{clmbr_save_path}/val_preds.csv', index=False)
-	pat_info_df.to_csv(f'{clmbr_save_path}/pat_info.csv', index=False)
 	
 	# save best epoch for debugging 
 	with open(f'{clmbr_save_path}/best_epoch.txt', 'w') as f:
 		f.write(f'{best_epoch}')
 		
-	return best_model, best_val_loss, val_output_df
+	return best_model, best_val_loss, best_epoch
 
-def evaluate_model(args, model, dataset):
+def evaluate_model(args, model, dataset, e):
 	model.eval()
 	
 	criterion = nn.CrossEntropyLoss()
@@ -584,6 +599,7 @@ def evaluate_model(args, model, dataset):
 	preds = []
 	lbls = []
 	losses = []
+	pat_info_df = pd.DataFrame()
 	with torch.no_grad():
 		with DataLoader(dataset, model.config['num_first'], is_val=True, batch_size=model.config['batch_size'], seed=args.seed, device=args.device) as eval_loader:
 			for batch in tqdm(eval_loader):
@@ -596,8 +612,11 @@ def evaluate_model(args, model, dataset):
 				losses.append(loss.item())
 				preds.extend(list(outputs['preds'].cpu().numpy()))
 				lbls.extend(list(outputs['labels'].cpu().numpy()))
+				df = outputs['pat_df']
+
+				pat_info_df = pd.concat((pat_info_df,df))
 	print('Validation loss:',  np.sum(losses))
-	return preds, lbls, losses, outputs['pat_df']
+	return preds, lbls, losses, pat_info_df
 
 if __name__ == '__main__':
     
@@ -672,7 +691,7 @@ if __name__ == '__main__':
 			# Run finetune procedure
 			# trainer = Trainer(model)
 			# trainer.train(dataset)
-			clmbr_model, val_loss, val_df = finetune(args, model, train_dataset, val_dataset, float(cl_hp['lr']), clmbr_save_path, clmbr_model_path)
+			clmbr_model, val_loss, best_epoch = finetune(args, model, train_dataset, val_dataset, float(cl_hp['lr']), clmbr_save_path, clmbr_model_path)
 			clmbr_model.freeze()
 			if val_loss < best_val_loss:
 				print('Saving as best finetuned model...')
@@ -685,7 +704,8 @@ if __name__ == '__main__':
 					json.dump(config,f)
 				with open(f"{best_ft_path}/hyperparams.yml", 'w') as file: # fix format of dump
 					yaml.dump(best_params,file)
-				val_df.to_csv(f'{best_ft_path}/val_preds.csv', index=False)
+				with open(f'{best_ft_path}/best_epoch.txt', 'w') as f:
+					f.write(f'{best_epoch}')
 			# Save model and save info and config to new model directory for downstream evaluation
 			torch.save(clmbr_model.state_dict(), os.path.join(clmbr_save_path,'best'))
 			shutil.copyfile(f'{clmbr_model_path}/info.json', f'{clmbr_save_path}/info.json')
