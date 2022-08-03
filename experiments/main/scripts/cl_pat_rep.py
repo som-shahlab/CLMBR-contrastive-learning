@@ -503,7 +503,7 @@ def load_data(args, clmbr_hp):
 
 	return train_data, val_data
         
-def train(args, model, train_dataset, val_dataset, lr, clmbr_save_path, clmbr_model_path):
+def train(args, model, train_dataset, val_dataset, lr, clmbr_save_path, clmbr_info_path):
 	"""
 	Train CL foundational model
 	"""
@@ -569,7 +569,7 @@ def train(args, model, train_dataset, val_dataset, lr, clmbr_save_path, clmbr_mo
 		#save current epoch model
 		os.makedirs(f'{clmbr_save_path}/{e}',exist_ok=True)
 		torch.save(clmbr_model.state_dict(), os.path.join(clmbr_save_path,f'{e}/best'))
-		shutil.copyfile(f'{clmbr_model_path}/info.json', f'{clmbr_save_path}/{e}/info.json')
+		shutil.copyfile(f'{clmbr_info_path}', f'{clmbr_save_path}/{e}/info.json')
 		pat_info_df.to_csv(f'{clmbr_save_path}/{e}/pat_info.csv', index=False)
 		with open(f'{clmbr_save_path}/{e}/config.json', 'w') as f:
 			json.dump(config,f)			

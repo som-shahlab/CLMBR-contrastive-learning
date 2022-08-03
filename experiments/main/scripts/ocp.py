@@ -263,7 +263,7 @@ class ContrastiveLearn(nn.Module):
 
 		# For patient timeline in batch get window pair embeddings
 		embeds, labels = self.clmbr_model.timeline_model(batch["rnn"], windows)
-		labels = labels.to(self.device)
+		labels = labels.to(self.device).unsqueeze(-1)
 		
 		# Use pooler to get target embeddings
 		target_embeds = self.pooler(embeds)
@@ -350,13 +350,12 @@ def train(args, model, train_dataset, windows, lr, clmbr_save_path, clmbr_info_p
 	optimizer = optim.Adam([p for n, p in model.named_parameters() if p.requires_grad], lr=lr)
 	best_val_loss = 9999999
 	early_stop = EarlyStopping(args.patience)
-	train_output_df = pd.DataFrame()
-	val_output_df = pd.DataFrame()
-	model_train_loss = []
-	model_val_loss = []
+	
 	best_epoch = 0
 	for e in range(args.epochs):
 		model.train()
+		model_train_loss_df = pd.DataFrame()
+		model_val_loss_df = pd.DataFrame()
 		train_loss = []
 		train_preds = []
 		train_lbls = []
@@ -364,6 +363,7 @@ def train(args, model, train_dataset, windows, lr, clmbr_save_path, clmbr_info_p
 			for batch in tqdm(train_loader):
 					 
 				pid_df = windows.query('ehr_id==@batch["pid"][0]')
+				# Skip batches where patient has < 2 admissions
 				if len(pid_df) < 2:
 					continue
 				else:
@@ -380,19 +380,22 @@ def train(args, model, train_dataset, windows, lr, clmbr_save_path, clmbr_info_p
 					train_loss.append(loss.item())
 
 		print('Training loss:',  np.sum(train_loss))
-		model_train_loss.append(np.sum(train_loss))
+		df = pd.DataFrame({'loss':train_loss})
+		df['epoch'] = e
+		df.to_csv(f'{clmbr_save_path}/{e}/train_loss.csv')
 		
 		# evaluate on validation set
 		val_preds, val_lbls, val_losses = evaluate_model(args, model, val_data, windows)
 		val_loss = np.sum(val_losses)
-		model_val_loss.append(val_loss)
-		
+		df = pd.DataFrame({'loss':val_losses})
+		df['epoch'] = e
+		df.to_csv(f'{clmbr_save_path}/{e}/val_loss.csv')
 		
 		# Save train and val model predictions/labels
 		df = pd.DataFrame({'epoch':e,'preds':train_preds,'labels':train_lbls})
-		train_output_df = pd.concat((train_output_df,df),axis=0)
+		df.to_csv(f'{clmbr_save_path}/{e}/train_preds.csv', index=False)
 		df = pd.DataFrame({'epoch':e,'preds':val_preds,'labels':val_lbls})
-		val_output_df = pd.concat((val_output_df,df),axis=0)
+		df.to_csv(f'{clmbr_save_path}/{e}/val_preds.csv', index=False)
 
 		#save current epoch model
 		os.makedirs(f'{clmbr_save_path}/{e}',exist_ok=True)
@@ -407,24 +410,15 @@ def train(args, model, train_dataset, windows, lr, clmbr_save_path, clmbr_info_p
 			best_epoch = e
 			best_model = copy.deepcopy(model.clmbr_model)
 			
-		print('Epoch train loss', np.sum(train_loss))
-		print('Epoch val loss', val_loss)
 		# Trigger early stopping if model hasn't improved for awhile
 		if early_stop(val_loss):
 			print(f'Early stopping at epoch {e}')
 			break
-		
-	# write train and val loss/preds to csv
-	df = pd.DataFrame(model_train_loss)
-	df.to_csv(f'{clmbr_save_path}/train_loss.csv')
-	df = pd.DataFrame(model_val_loss)
-	df.to_csv(f'{clmbr_save_path}/val_loss.csv')
-	train_output_df.to_csv(f'{clmbr_save_path}/train_preds.csv', index=False)
-	val_output_df.to_csv(f'{clmbr_save_path}/val_preds.csv', index=False)
+
 	with open(f'{clmbr_save_path}/best_epoch.txt', 'w') as f:
 		f.write(f'{best_epoch}')
 		
-	return best_model, best_val_loss, val_output_df
+	return best_model, best_val_loss, best_epoch
 
 def evaluate_model(args, model, data, windows):
 	model.eval()
@@ -510,6 +504,10 @@ if __name__ == '__main__':
 				)
 			)
 		)
+	
+	best_path = os.path.join(args.model_path,'best')
+	os.makedirs(f"{best_path}",exist_ok=True)
+	
 	for i, hp in enumerate(grid):
 		print('Initialized OCP model with params: ', hp)
 		clmbr_info_path = f'{args.pt_info_path}/info.json'
@@ -542,15 +540,14 @@ if __name__ == '__main__':
 		model.train()
 
 		# Run finetune procedure
-		clmbr_model, val_loss, val_df = train(args, model, train_dataset, windows, float(hp['lr']), clmbr_save_path, clmbr_info_path, i)
+		clmbr_model, val_loss, best_epoch = train(args, model, train_dataset, windows, float(hp['lr']), clmbr_save_path, clmbr_info_path, i)
 		writer.flush()
 		clmbr_model.freeze()
 		if val_loss < best_val_loss:
 			print('Saving as best trained model...')
 			best_val_loss = val_loss
 			best_params = hp
-			best_path = os.path.join(args.model_path,'best')
-			os.makedirs(f"{best_path}",exist_ok=True)
+			
 
 			torch.save(clmbr_model.state_dict(), f'{best_path}/best')
 			shutil.copyfile(clmbr_info_path, f'{best_path}/info.json')
@@ -558,7 +555,8 @@ if __name__ == '__main__':
 				json.dump(config,f)
 			with open(f"{best_path}/hyperparams.yml", 'w') as file: # fix format of dump
 				yaml.dump(best_params,file)
-			val_df.to_csv(f'{best_path}/val_preds.csv', index=False)
+			with open(f'{best_path}/best_epoch.txt', 'w') as f:
+					f.write(f'{best_epoch}')
 		# Save model and save info and config to new model directory for downstream evaluation
 		torch.save(clmbr_model.state_dict(), os.path.join(clmbr_save_path,'best'))
 		shutil.copyfile(f'{clmbr_info_path}', f'{clmbr_save_path}/info.json')
