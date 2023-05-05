@@ -108,19 +108,17 @@ def split_cohort_by_year(
 					f"fold_id":str(c)
 				})
 			)
-
 	for task in tasks:
 		assert(task in test.columns)
-
 		test[f"{task}_fold_id"]=test['fold_id']
-
+		
 		# remove deaths before midnight
-		test.loc[test['death_date']<test['admit_date_midnight'],f'{task}_fold_id']='ignore'
-		test.loc[test['death_date']<test['admit_date_midnight'],f'{task}']=np.nan
+		test.loc[test['death_date']<=test['admit_date_midnight'],f'{task}_fold_id']='ignore'
+		test.loc[test['death_date']<=test['admit_date_midnight'],f'{task}']=np.nan
 
 		# remove discharges before midnight
-		test.loc[test['discharge_date']<test['admit_date_midnight'],f'{task}_fold_id']='ignore'
-		test.loc[test['discharge_date']<test['admit_date_midnight'],f'{task}']=np.nan
+		test.loc[test['discharge_date']<=test['admit_date_midnight'],f'{task}_fold_id']='ignore'
+		test.loc[test['discharge_date']<=test['admit_date_midnight'],f'{task}']=np.nan
 
 		if task == 'readmission_30':
 			# remove admissions in which the patient died
@@ -132,9 +130,29 @@ def split_cohort_by_year(
 
 		if task == 'icu_admission':
 			# remove icu admissions before midnight
-			test.loc[test['icu_start_datetime']<test['admit_date_midnight'],f'{task}_fold_id']='ignore'
-			test.loc[test['icu_start_datetime']<test['admit_date_midnight'],f'{task}']=np.nan
-
+			test.loc[test['icu_start_datetime']<=test['admit_date_midnight'],f'{task}_fold_id']='ignore'
+			test.loc[test['icu_start_datetime']<=test['admit_date_midnight'],f'{task}']=np.nan
+			
+		if task == 'aki1_label':
+			# remove aki1 before midnight
+			test.loc[test['aki1_creatinine_time']<=test['admit_date_midnight'],f'{task}_fold_id']='ignore'
+			test.loc[test['aki1_creatinine_time']<=test['admit_date_midnight'],f'{task}']=np.nan
+		if task == 'aki2_label':
+			# remove aki2 before midnight
+			test.loc[test['aki2_creatinine_time']<=test['admit_date_midnight'],f'{task}_fold_id']='ignore'
+			test.loc[test['aki2_creatinine_time']<=test['admit_date_midnight'],f'{task}']=np.nan
+		if task == 'hg_label':
+			# remove hg before midnight
+			test.loc[test['hg_glucose_time']<=test['admit_date_midnight'],f'{task}_fold_id']='ignore'
+			test.loc[test['hg_glucose_time']<=test['admit_date_midnight'],f'{task}']=np.nan
+		if task == 'np_500_label':
+			# remove np_500 before midnight
+			test.loc[test['np_500_neutrophils_time']<=test['admit_date_midnight'],f'{task}_fold_id']='ignore'
+			test.loc[test['np_500_neutrophils_time']<=test['admit_date_midnight'],f'{task}']=np.nan
+		if task == 'np_1000_label':
+			# remove np_500 before midnight
+			test.loc[test['np_1000_neutrophils_time']<=test['admit_date_midnight'],f'{task}_fold_id']='ignore'
+			test.loc[test['np_1000_neutrophils_time']<=test['admit_date_midnight'],f'{task}']=np.nan
 	return test.sort_index()
 
 #-------------------------------------------------------------------

@@ -23,8 +23,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from torch.utils.tensorboard import SummaryWriter
-writer = SummaryWriter('./runs/cl_ete')
 
 from sklearn.model_selection import ParameterGrid
 #from torch.utils.data import DataLoader, Dataset
@@ -300,6 +298,7 @@ def load_data(args):
 	filtered_id_path = f'{args.filtered_id_fpath}'
 	
 	#get list of patient ids with >1 admission
+	# these were precomputed using convert_filtered.py
 	admission_df = pd.read_csv(f'{filtered_id_path}/patients.csv')
 	admission_df = admission_df.drop(admission_df[admission_df.admit_date > args.idx_end_date].index)
 	pids = np.array(admission_df['ehr_id'].unique())
@@ -336,11 +335,10 @@ def get_adm_window_indices(adm_df, pids):
 	adm_df['cum_days'] = adm_df.groupby(['ehr_id'])['diff'].cumsum().astype('int')
 	adm_df['win_idx_start'] = adm_df['cum_days'] - adm_df['diff']
 	adm_df['win_idx_end'] = adm_df['cum_days']
-	# adm_df = adm_df.drop(columns=['cum_days', 'diff'])
 
 	return adm_df
 	
-def train(args, model, train_dataset, windows, lr, clmbr_save_path, clmbr_info_path, hp_int):
+def train(args, model, train_dataset, windows, lr, clmbr_save_path, clmbr_info_path):
 	"""
 	Train CLMBR model using CL objective.
 	"""
@@ -353,6 +351,8 @@ def train(args, model, train_dataset, windows, lr, clmbr_save_path, clmbr_info_p
 	
 	best_epoch = 0
 	for e in range(args.epochs):
+		
+		os.makedirs(f'{clmbr_save_path}/{e}',exist_ok=True)
 		model.train()
 		model_train_loss_df = pd.DataFrame()
 		model_val_loss_df = pd.DataFrame()
@@ -372,8 +372,8 @@ def train(args, model, train_dataset, windows, lr, clmbr_save_path, clmbr_info_p
 						pid_df = pid_df[:-1]
 					optimizer.zero_grad()
 					outputs = model(batch, pid_df)
-					train_preds.extend(list(outputs['preds'].detach().clone().cpu().numpy()))
-					train_lbls.extend(list(outputs['labels'].detach().clone().cpu().numpy()))
+					train_preds.extend(list(outputs['preds'].detach().clone().cpu().numpy().flatten()))
+					train_lbls.extend(list(outputs['labels'].detach().clone().cpu().numpy().flatten()))
 					loss = outputs["loss"]
 					loss.backward()
 					optimizer.step()
@@ -385,7 +385,7 @@ def train(args, model, train_dataset, windows, lr, clmbr_save_path, clmbr_info_p
 		df.to_csv(f'{clmbr_save_path}/{e}/train_loss.csv')
 		
 		# evaluate on validation set
-		val_preds, val_lbls, val_losses = evaluate_model(args, model, val_data, windows)
+		val_preds, val_lbls, val_losses = evaluate_model(args, model, train_dataset, windows)
 		val_loss = np.sum(val_losses)
 		df = pd.DataFrame({'loss':val_losses})
 		df['epoch'] = e
@@ -399,7 +399,7 @@ def train(args, model, train_dataset, windows, lr, clmbr_save_path, clmbr_info_p
 
 		#save current epoch model
 		os.makedirs(f'{clmbr_save_path}/{e}',exist_ok=True)
-		torch.save(clmbr_model.state_dict(), os.path.join(clmbr_save_path,f'{e}/best'))
+		torch.save(model.clmbr_model.state_dict(), os.path.join(clmbr_save_path,f'{e}/best'))
 		shutil.copyfile(f'{clmbr_info_path}', f'{clmbr_save_path}/{e}/info.json')
 		with open(f'{clmbr_save_path}/{e}/config.json', 'w') as f:
 			json.dump(config,f)
@@ -409,7 +409,7 @@ def train(args, model, train_dataset, windows, lr, clmbr_save_path, clmbr_info_p
 			best_val_loss = val_loss
 			best_epoch = e
 			best_model = copy.deepcopy(model.clmbr_model)
-			
+		
 		# Trigger early stopping if model hasn't improved for awhile
 		if early_stop(val_loss):
 			print(f'Early stopping at epoch {e}')
@@ -420,7 +420,7 @@ def train(args, model, train_dataset, windows, lr, clmbr_save_path, clmbr_info_p
 		
 	return best_model, best_val_loss, best_epoch
 
-def evaluate_model(args, model, data, windows):
+def evaluate_model(args, model, dataset, windows):
 	model.eval()
 
 	criterion = nn.CrossEntropyLoss()
@@ -429,28 +429,59 @@ def evaluate_model(args, model, data, windows):
 	lbls = []
 	losses = []
 	with torch.no_grad():
-			# print(pid_df)
-			dataset = PatientTimelineDataset(args.extract_path + '/extract.db', 
-											 args.extract_path + '/ontology.db', 
-											 f'{clmbr_info_path}', 
-											 data, 
-											 data )
-			with DataLoader(dataset, model.config['num_first'], is_val=True, batch_size=1, seed=args.seed, device=args.device) as eval_loader:
-				for batch in tqdm(eval_loader):
-					
-					pid_df = windows.query('ehr_id==@batch["pid"][0]')
-					if len(pid_df) < 2:
-						pass
-					else:
-						if len(pid_df) % 2 != 0:
-							pid_df = pid_df[:-1]
-						outputs = model(batch, pid_df)
-						loss = outputs["loss"]
-						losses.append(loss.item())
-						preds.extend(list(outputs['preds'].cpu().numpy()))
-						lbls.extend(list(outputs['labels'].cpu().numpy()))
+		with DataLoader(dataset, model.config['num_first'], is_val=True, batch_size=1, seed=args.seed, device=args.device) as eval_loader:
+			for batch in tqdm(eval_loader):
+
+				pid_df = windows.query('ehr_id==@batch["pid"][0]')
+				if len(pid_df) < 2:
+					pass
+				else:
+					if len(pid_df) % 2 != 0:
+						pid_df = pid_df[:-1]
+					outputs = model(batch, pid_df)
+					loss = outputs["loss"]
+					losses.append(loss.item())
+					preds.extend(list(outputs['preds'].cpu().numpy().flatten()))
+					lbls.extend(list(outputs['labels'].cpu().numpy().flatten()))
 	print('Validation loss:',  np.sum(losses))
 	return preds, lbls, losses
+
+def ocp(args, grid, clmbr_info_path, dataset, windows):
+	print('Initialized OCP model with params: ', hp)
+	
+	with open(clmbr_info_path) as f:
+		info = json.load(f)
+	config = get_config(hp)
+
+	model_str = f"{args.encoder}_sz_{hp['size']}_do_{hp['dropout']}_l2_{hp['l2']}_lr_{hp['lr']}_pool_{hp['pool']}"
+	clmbr_save_path = f"{args.model_path}/{model_str}"
+	print(clmbr_save_path)
+	os.makedirs(f"{clmbr_save_path}",exist_ok=True)
+	# load train/val data and admission windows
+
+
+	config["model_dir"] = clmbr_save_path
+	config['lr'] = hp['lr']
+	clmbr_model = ehr_ml.clmbr.CLMBR(config, info).to(torch.device(args.device))
+
+	config = clmbr_model.config
+
+	clmbr_model.unfreeze()
+	# Get contrastive learning model 
+	model = ContrastiveLearn(clmbr_model, 2, 'ocp', args.device).to(args.device)
+	model.train()
+
+	# Run training procedure
+	clmbr_model, val_loss, best_epoch = train(args, model, dataset, windows, float(hp['lr']), clmbr_save_path, clmbr_info_path)
+	clmbr_model.freeze()
+
+	# Save model and save info and config to new model directory for downstream evaluation
+	torch.save(clmbr_model.state_dict(), os.path.join(clmbr_save_path,'best'))
+	shutil.copyfile(f'{clmbr_info_path}', f'{clmbr_save_path}/info.json')
+	with open(f'{clmbr_save_path}/config.json', 'w') as f:
+		json.dump(config,f)
+	
+	return clmbr_model, val_loss, best_epoch
 
 def get_config(hp):
     config = {'b1': 0.9,
@@ -507,61 +538,32 @@ if __name__ == '__main__':
 	
 	best_path = os.path.join(args.model_path,'best')
 	os.makedirs(f"{best_path}",exist_ok=True)
+	clmbr_info_path = f'{args.pt_info_path}/info.json'
+	best_val_loss = 9999999
+	best_params = None
+	
+	train_data, val_data, windows = load_data(args)
+	dataset = PatientTimelineDataset(args.extract_path + '/extract.db', 
+									 args.extract_path + '/ontology.db', 
+									 f'{clmbr_info_path}', 
+									 train_data, 
+									 val_data )
 	
 	for i, hp in enumerate(grid):
-		print('Initialized OCP model with params: ', hp)
-		clmbr_info_path = f'{args.pt_info_path}/info.json'
-		with open(clmbr_info_path) as f:
-			info = json.load(f)
-		config = get_config(hp)
-		best_val_loss = 9999999
-		best_params = None
-
-		model_str = f"{args.encoder}_sz_{hp['size']}_do_{hp['dropout']}_l2_{hp['l2']}_lr_{hp['lr']}_pool_{hp['pool']}"
-		clmbr_save_path = f"{args.model_path}/{model_str}"
-		print(clmbr_save_path)
-		os.makedirs(f"{clmbr_save_path}",exist_ok=True)
-		train_data, val_data, windows = load_data(args)
-		train_dataset = PatientTimelineDataset(args.extract_path + '/extract.db', 
-										 args.extract_path + '/ontology.db', 
-										 f'{clmbr_info_path}', 
-										 train_data, 
-										 val_data )
+		model, val_loss, best_epoch =  ocp(args, hp, clmbr_info_path, dataset, windows)
 		
-		config["model_dir"] = clmbr_save_path
-		config['lr'] = hp['lr']
-		clmbr_model = ehr_ml.clmbr.CLMBR(config, info).to(torch.device(args.device))
-
-		config = clmbr_model.config
-
-		clmbr_model.unfreeze()
-		# Get contrastive learning model 
-		model = ContrastiveLearn(clmbr_model, 2, 'ocp', args.device).to(args.device)
-		model.train()
-
-		# Run finetune procedure
-		clmbr_model, val_loss, best_epoch = train(args, model, train_dataset, windows, float(hp['lr']), clmbr_save_path, clmbr_info_path, i)
-		writer.flush()
-		clmbr_model.freeze()
+		# save model if best model seen so far
 		if val_loss < best_val_loss:
 			print('Saving as best trained model...')
 			best_val_loss = val_loss
 			best_params = hp
-			
 
-			torch.save(clmbr_model.state_dict(), f'{best_path}/best')
+			# save model state
+			torch.save(model.state_dict(), f'{best_path}/best')
 			shutil.copyfile(clmbr_info_path, f'{best_path}/info.json')
 			with open(f'{best_path}/config.json', 'w') as f:
-				json.dump(config,f)
-			with open(f"{best_path}/hyperparams.yml", 'w') as file: # fix format of dump
+				json.dump(model.config,f)
+			with open(f"{best_path}/hyperparams.yml", 'w') as file: 
 				yaml.dump(best_params,file)
 			with open(f'{best_path}/best_epoch.txt', 'w') as f:
 					f.write(f'{best_epoch}')
-		# Save model and save info and config to new model directory for downstream evaluation
-		torch.save(clmbr_model.state_dict(), os.path.join(clmbr_save_path,'best'))
-		shutil.copyfile(f'{clmbr_info_path}', f'{clmbr_save_path}/info.json')
-		with open(f'{clmbr_save_path}/config.json', 'w') as f:
-			json.dump(config,f)
-writer.close()
-        
-    

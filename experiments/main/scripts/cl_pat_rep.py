@@ -40,7 +40,7 @@ parser.add_argument(
 parser.add_argument(
     '--model_path',
     type=str,
-    default='/local-scratch/nigam/projects/jlemmon/cl-clmbr/experiments/main/artifacts/models/clmbr/cl_ete/models',
+    default='/local-scratch/nigam/projects/jlemmon/cl-clmbr/experiments/main/artifacts/models/clmbr/cl_rep/models',
     help='Base path for the trained end-to-end model.'
 )
 
@@ -260,8 +260,8 @@ class Pooler(nn.Module):
 				r_pair_id.append(pids[i])
 				l_pair_idx.append('n/a')
 				r_pair_idx.append('n/a')
-				l_pair_max_idx.append(len(e))
-				r_pair_max_idx.append(len(e))
+				l_pair_max_idx.append(len(embeds[i]))
+				r_pair_max_idx.append(len(embeds[i]))
 				z1_out = torch.concat((z1_out, torch.reshape(e, (1,1,embeds.shape[-1]))), 0)
 				z2_out = torch.concat((z2_out, torch.reshape(z2_mean_embeds[i], (1,1,embeds.shape[-1]))), 0)
 				labels.append(1)
@@ -278,8 +278,8 @@ class Pooler(nn.Module):
 					r_pair_id.append(pids[j])
 					l_pair_idx.append('n/a')
 					r_pair_idx.append('n/a')
-					l_pair_max_idx.append(len(e))
-					r_pair_max_idx.append(len(neg_embeds))
+					l_pair_max_idx.append(len(embeds[i]))
+					r_pair_max_idx.append(len(embeds_2[j]))
 				df = pd.DataFrame({'left_id':l_pair_id, 'left_idx':l_pair_idx, 'left_max_idx':l_pair_max_idx, 'right_id':r_pair_id, 'right_idx':r_pair_idx, 'right_max_idx':r_pair_max_idx})
 				pat_info_df =pd.concat((pat_info_df,df))
 			labels = torch.tensor(labels).float().to(self.device)
@@ -503,7 +503,7 @@ def load_data(args, clmbr_hp):
 
 	return train_data, val_data
         
-def train(args, model, train_dataset, val_dataset, lr, clmbr_save_path, clmbr_info_path):
+def train(args, model, dataset, lr, clmbr_save_path, clmbr_info_path):
 	"""
 	Train CL foundational model
 	"""
@@ -515,6 +515,9 @@ def train(args, model, train_dataset, val_dataset, lr, clmbr_save_path, clmbr_in
 	best_epoch = 0
 	
 	for e in range(args.epochs):
+		
+		os.makedirs(f'{clmbr_save_path}/{e}',exist_ok=True)
+		
 		model.train()
 		pat_info_df = pd.DataFrame()
 		model_train_loss_df = pd.DataFrame()
@@ -522,7 +525,7 @@ def train(args, model, train_dataset, val_dataset, lr, clmbr_save_path, clmbr_in
 		train_loss = []
 		train_preds = []
 		train_lbls = []
-		with DataLoader(train_dataset, model.config['num_first'], is_val=False, batch_size=model.config["batch_size"], device=args.device) as train_loader:
+		with DataLoader(dataset, model.config['num_first'], is_val=False, batch_size=model.config["batch_size"], device=args.device) as train_loader:
 			for batch in tqdm(train_loader):
 				# Skip batches that only consist of one patient - otherwise no negative samples are generated
 				if len(batch['pid']) < 2:
@@ -551,7 +554,7 @@ def train(args, model, train_dataset, val_dataset, lr, clmbr_save_path, clmbr_in
 		df.to_csv(f'{clmbr_save_path}/{e}/train_loss.csv')
 		
 		# evaluate on validation set
-		val_preds, val_lbls, val_losses, df = evaluate_model(args, model, val_dataset, e)
+		val_preds, val_lbls, val_losses, df = evaluate_model(args, model, dataset, e)
 		df['epoch'] = e
 		df['phase'] = 'val'
 		pat_info_df = pd.concat((pat_info_df,df))
@@ -568,7 +571,7 @@ def train(args, model, train_dataset, val_dataset, lr, clmbr_save_path, clmbr_in
 		
 		#save current epoch model
 		os.makedirs(f'{clmbr_save_path}/{e}',exist_ok=True)
-		torch.save(clmbr_model.state_dict(), os.path.join(clmbr_save_path,f'{e}/best'))
+		torch.save(model.clmbr_model.state_dict(), os.path.join(clmbr_save_path,f'{e}/best'))
 		shutil.copyfile(f'{clmbr_info_path}', f'{clmbr_save_path}/{e}/info.json')
 		pat_info_df.to_csv(f'{clmbr_save_path}/{e}/pat_info.csv', index=False)
 		with open(f'{clmbr_save_path}/{e}/config.json', 'w') as f:
@@ -687,17 +690,12 @@ if __name__ == '__main__':
 			os.makedirs(f"{clmbr_save_path}",exist_ok=True)
 			train_data, val_data = load_data(args, clmbr_hp)
 
-			train_dataset = PatientTimelineDataset(args.extract_path + '/extract.db', 
+			dataset = PatientTimelineDataset(args.extract_path + '/extract.db', 
 											 args.extract_path + '/ontology.db', 
 											 clmbr_info_path, 
 											 train_data, 
-											 train_data )
-			
-			val_dataset = PatientTimelineDataset(args.extract_path + '/extract.db', 
-											 args.extract_path + '/ontology.db', 
-											 clmbr_info_path, 
-											 val_data, 
 											 val_data )
+			
 			config["model_dir"] = clmbr_save_path
 			clmbr_model = ehr_ml.clmbr.CLMBR(config, info).to(torch.device(args.device))
 			# Modify CLMBR config settings
@@ -710,7 +708,7 @@ if __name__ == '__main__':
 			model.train()
 
 			# Run finetune procedure
-			clmbr_model, val_loss, best_epoch = train(args, model, train_dataset, val_dataset, float(cl_hp['lr']), clmbr_save_path, clmbr_info_path)
+			clmbr_model, val_loss, best_epoch = train(args, model, dataset, float(cl_hp['lr']), clmbr_save_path, clmbr_info_path)
 			clmbr_model.freeze()
 			if val_loss < best_val_loss:
 				print('Saving as best trained model...')
@@ -725,7 +723,6 @@ if __name__ == '__main__':
 					json.dump(config,f)
 				with open(f"{best_path}/hyperparams.yml", 'w') as file: # fix format of dump
 					yaml.dump(best_params,file)
-				val_df.to_csv(f'{best_path}/val_preds.csv', index=False)
 			# Save model and save info and config to new model directory for downstream evaluation
 			torch.save(clmbr_model.state_dict(), os.path.join(clmbr_save_path,'best'))
 			shutil.copyfile(f'{clmbr_info_path}', f'{clmbr_save_path}/info.json')

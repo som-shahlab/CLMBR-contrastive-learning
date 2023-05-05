@@ -55,14 +55,14 @@ parser.add_argument(
 parser.add_argument(
     '--cl_rep_best_path',
     type=str,
-    default='/local-scratch/nigam/projects/jlemmon/cl-clmbr/experiments/main/artifacts/models/clmbr/cl_ete/models/best',
+    default='/local-scratch/nigam/projects/jlemmon/cl-clmbr/experiments/main/artifacts/models/clmbr/cl_rep/models/best',
     help='Base path for the best contrastively trained model.'
 )
 
 parser.add_argument(
     '--cl_rep_model_path',
     type=str,
-    default='/local-scratch/nigam/projects/jlemmon/cl-clmbr/experiments/main/artifacts/models/clmbr/cl_ete/models',
+    default='/local-scratch/nigam/projects/jlemmon/cl-clmbr/experiments/main/artifacts/models/clmbr/cl_rep/models',
     help='Base path for the trained CL rep model.'
 )
 
@@ -227,6 +227,13 @@ parser.add_argument(
     help='Device to run torch model on.'
 )
 
+parser.add_argument(
+	'--patience',
+	type=int,
+	default=5,
+	help='Number of epochs to wait before triggering early stopping.'
+)
+
 
 class LinearProbe(nn.Module):
 	def __init__(self, clmbr_model, size, device='cuda:0', is_ocp=False):
@@ -261,7 +268,23 @@ class LinearProbe(nn.Module):
 	def unfreeze_clmbr(self):
 		self.clmbr_model.unfreeze()
 
-	
+class EarlyStopping():
+	def __init__(self, patience):
+		self.patience = patience
+		self.early_stop = False
+		self.best_loss = 9999999
+		self.counter = 0
+	def __call__(self, loss):
+		if self.best_loss > loss:
+			self.counter = 0
+			self.best_loss = loss
+		else:
+			self.counter += 1
+			if self.counter == self.patience:
+				self.early_stop = True
+		return self.early_stop
+		
+		
 def load_datasets(args, task, clmbr_hp, clmbr_model_path):
 	"""
 	Load datasets from split csv files.
@@ -309,6 +332,8 @@ def train_probe(args, model, dataset, save_path):
 	optimizer = optim.Adam([p for n, p in model.named_parameters() if p.requires_grad], lr=args.lr)
 	
 	criterion = nn.BCELoss()
+	
+	early_stop = EarlyStopping(args.patience)
 	
 	best_model = None
 	best_val_loss = 9999999
@@ -362,6 +387,11 @@ def train_probe(args, model, dataset, save_path):
 			best_val_preds = val_preds
 			best_val_lbls = val_lbls
 			best_val_ids = val_ids
+		
+		# Trigger early stopping if model hasn't improved for awhile
+		if early_stop(epoch_val_loss):
+			print(f'Early stopping at epoch {e}')
+			break
 	return best_model, best_val_preds, best_val_lbls, best_val_ids
 
 def evaluate_probe(args, model, dataset):
@@ -454,29 +484,29 @@ if __name__ == '__main__':
 		)
 	)[0]
 	
-# 	cl_rep_hp = list(
-# 		ParameterGrid(
-# 			yaml.load(
-# 				open(
-# 					f"{os.path.join(args.cl_rep_best_path,'hyperparams')}.yml",
-# 					'r'
-# 				),
-# 				Loader=yaml.FullLoader
-# 			)
-# 		)
-# 	)[0]
+	cl_rep_hp = list(
+		ParameterGrid(
+			yaml.load(
+				open(
+					f"{os.path.join(args.cl_rep_best_path,'hyperparams')}.yml",
+					'r'
+				),
+				Loader=yaml.FullLoader
+			)
+		)
+	)[0]
 	
-# 	ocp_hp = list(
-# 		ParameterGrid(
-# 			yaml.load(
-# 				open(
-# 					f"{os.path.join(args.ocp_best_path,'hyperparams')}.yml",
-# 					'r'
-# 				),
-# 				Loader=yaml.FullLoader
-# 			)
-# 		)
-# 	)[0]
+	ocp_hp = list(
+		ParameterGrid(
+			yaml.load(
+				open(
+					f"{os.path.join(args.ocp_best_path,'hyperparams')}.yml",
+					'r'
+				),
+				Loader=yaml.FullLoader
+			)
+		)
+	)[0]
 	
 	# Iterate through tasks
 	for task in tasks:
@@ -484,108 +514,108 @@ if __name__ == '__main__':
 		
 		# Iterate through (singular) CLMBR hyperparam settings
 	
-		print('Training BL CLMBR probe with params: ', bl_hp)
+# 		print('Training BL CLMBR probe with params: ', bl_hp)
 			
-# 		# Path where CLMBR model is saved
+# # 		# Path where CLMBR model is saved
 		bl_model_str = f'{args.encoder}_sz_{bl_hp["size"]}_do_{bl_hp["dropout"]}_cd_{bl_hp["code_dropout"]}_dd_{bl_hp["day_dropout"]}_lr_{bl_hp["lr"]}_l2_{bl_hp["l2"]}'
 		clmbr_model_path = f'{args.pt_model_path}/{bl_model_str}'
-# 		print(clmbr_model_path)
+# # 		print(clmbr_model_path)
 
-# 		# Load  datasets
+# # 		# Load  datasets
 		train_dataset, test_dataset = load_datasets(args, task, bl_hp, clmbr_model_path)
 
-# 		# Path where CLMBR probe will be saved
-		probe_save_path = f'{args.probe_path}/{task}/baseline/{bl_model_str}'
-		os.makedirs(f"{probe_save_path}",exist_ok=True)
+# # 		# Path where CLMBR probe will be saved
+# 		probe_save_path = f'{args.probe_path}/{task}/baseline/{bl_model_str}'
+# 		os.makedirs(f"{probe_save_path}",exist_ok=True)
 			
-		result_save_path = f'{args.results_path}/{task}/probes/baseline/{bl_model_str}'
-		os.makedirs(f"{result_save_path}",exist_ok=True)
+# 		result_save_path = f'{args.results_path}/{task}/probes/baseline/{bl_model_str}'
+# 		os.makedirs(f"{result_save_path}",exist_ok=True)
 			
-		# Load CLMBR model and attach linear probe
-		clmbr_model = ehr_ml.clmbr.CLMBR.from_pretrained(clmbr_model_path, args.device).to(args.device)
-		clmbr_model.freeze()
+# 		# Load CLMBR model and attach linear probe
+# 		clmbr_model = ehr_ml.clmbr.CLMBR.from_pretrained(clmbr_model_path, args.device).to(args.device)
+# 		clmbr_model.freeze()
 
-		probe_model = LinearProbe(clmbr_model, bl_hp['size'])
+# 		probe_model = LinearProbe(clmbr_model, bl_hp['size'])
 
-		probe_model.to(args.device)
+# 		probe_model.to(args.device)
 
-		print('Training probe...')
-		# Train probe and evaluate on validation 
-		probe_model, val_preds, val_labels, val_ids = train_probe(args, probe_model, train_dataset, probe_save_path)
+# 		print('Training probe...')
+# 		# Train probe and evaluate on validation 
+# 		probe_model, val_preds, val_labels, val_ids = train_probe(args, probe_model, train_dataset, probe_save_path)
 
-		val_df = pd.DataFrame({'CLMBR':'BL', 'model':'linear', 'task':task, 'phase':'val', 'person_id':val_ids, 'pred_probs':val_preds, 'labels':val_labels})
-		val_df.to_csv(f'{result_save_path}/val_preds.csv',index=False)
+# 		val_df = pd.DataFrame({'CLMBR':'BL', 'model':'linear', 'task':task, 'phase':'val', 'person_id':val_ids, 'pred_probs':val_preds, 'labels':val_labels})
+# 		val_df.to_csv(f'{result_save_path}/val_preds.csv',index=False)
 
-		print('Testing probe...')
-		test_preds, test_labels, test_ids = evaluate_probe(args, probe_model, test_dataset)
+# 		print('Testing probe...')
+# 		test_preds, test_labels, test_ids = evaluate_probe(args, probe_model, test_dataset)
 
-		test_df = pd.DataFrame({'CLMBR':'BL', 'model':'linear', 'task':task, 'phase':'test', 'person_id':test_ids, 'pred_probs':test_preds, 'labels':test_labels})
-		test_df.to_csv(f'{result_save_path}/test_preds.csv',index=False)
-		df_preds = pd.concat((val_df,test_df))
-		df_preds['CLMBR'] = df_preds['CLMBR'].astype(str)
-		df_preds['model'] = df_preds['model'].astype(str)
-		df_preds['task'] = df_preds['task'].astype(str)
-		df_preds['phase'] = df_preds['phase'].astype(str)
+# 		test_df = pd.DataFrame({'CLMBR':'BL', 'model':'linear', 'task':task, 'phase':'test', 'person_id':test_ids, 'pred_probs':test_preds, 'labels':test_labels})
+# 		test_df.to_csv(f'{result_save_path}/test_preds.csv',index=False)
+# 		df_preds = pd.concat((val_df,test_df))
+# 		df_preds['CLMBR'] = df_preds['CLMBR'].astype(str)
+# 		df_preds['model'] = df_preds['model'].astype(str)
+# 		df_preds['task'] = df_preds['task'].astype(str)
+# 		df_preds['phase'] = df_preds['phase'].astype(str)
 
-		df_eval = calc_metrics(args, df_preds)
-		df_eval['CLMBR'] = 'BL'
-		df_eval['task'] = task
-		df_eval.to_csv(f'{result_save_path}/eval.csv',index=False)
+# 		df_eval = calc_metrics(args, df_preds)
+# 		df_eval['CLMBR'] = 'BL'
+# 		df_eval['task'] = task
+# 		df_eval.to_csv(f'{result_save_path}/eval.csv',index=False)
 		
-		for cl_hp in [dp_hp, rd_hp, mr_hp]:
-			print('Training CL-CLMBR probe with params: ', cl_hp)
-			cl_model_str = f'bs_{cl_hp["batch_size"]}_lr_{cl_hp["lr"]}_temp_{cl_hp["temp"]}_pool_{cl_hp["pool"]}'
-			cl_model_path = f"{args.ft_model_path}_{cl_hp['pool']}"
-			# Create probe and result directories
-			probe_save_path = f'{args.probe_path}/{task}/contrastive_learn/{bl_model_str}/{cl_model_str}'
+# 		for cl_hp in [mr_hp]:#[dp_hp, rd_hp, mr_hp]:
+# 			print('Training CL-CLMBR probe with params: ', cl_hp)
+# 			cl_model_str = f'bs_{cl_hp["batch_size"]}_lr_{cl_hp["lr"]}_temp_{cl_hp["temp"]}_pool_{cl_hp["pool"]}'
+# 			cl_model_path = f"{args.ft_model_path}_{cl_hp['pool']}"
+# 			# Create probe and result directories
+# 			probe_save_path = f'{args.probe_path}/{task}/contrastive_learn/{bl_model_str}/{cl_model_str}'
 
-			os.makedirs(f"{probe_save_path}",exist_ok=True)
+# 			os.makedirs(f"{probe_save_path}",exist_ok=True)
 
-			result_save_path = f'{args.results_path}/{task}/probes/contrastive_learn/{bl_model_str}/{cl_model_str}'
+# 			result_save_path = f'{args.results_path}/{task}/probes/contrastive_learn/{bl_model_str}/{cl_model_str}'
 
-			os.makedirs(f"{result_save_path}",exist_ok=True)
+# 			os.makedirs(f"{result_save_path}",exist_ok=True)
 
-			# load cl clmbr model
-			cl_model = ehr_ml.clmbr.CLMBR.from_pretrained(clmbr_model_path, args.device).to(args.device)
-			cl_model.freeze()
+# 			# load cl clmbr model
+# 			cl_model = ehr_ml.clmbr.CLMBR.from_pretrained(clmbr_model_path, args.device).to(args.device)
+# 			cl_model.freeze()
 
-			# Get probe model
-			cl_probe_model = LinearProbe(cl_model, bl_hp['size'])
+# 			# Get probe model
+# 			cl_probe_model = LinearProbe(cl_model, bl_hp['size'])
 
-			cl_probe_model.to(args.device)
+# 			cl_probe_model.to(args.device)
 
-			# Train probe and get best model by validation score
-			cl_probe_model, val_preds, val_labels, val_ids = train_probe(args, cl_probe_model, train_dataset,  probe_save_path)
-			cl_str = 'CL-'
-			if cl_hp['pool'] == 'mean_rep':
-				cl_str += 'MR'
-			elif cl_hp['pool'] == 'rand_day':
-				cl_str += 'RD'
-			elif cl_hp['pool'] == 'diff_pat':
-				cl_str += 'DP'
-			val_df = pd.DataFrame({'CLMBR':cl_str, 'model':'linear','task':task, 'phase':'val', 'person_id':val_ids, 'pred_probs':val_preds, 'labels':val_labels})
-			val_df.to_csv(f'{result_save_path}/val_preds.csv',index=False)
+# 			# Train probe and get best model by validation score
+# 			cl_probe_model, val_preds, val_labels, val_ids = train_probe(args, cl_probe_model, train_dataset,  probe_save_path)
+# 			cl_str = 'CL-'
+# 			if cl_hp['pool'] == 'mean_rep':
+# 				cl_str += 'MR'
+# 			elif cl_hp['pool'] == 'rand_day':
+# 				cl_str += 'RD'
+# 			elif cl_hp['pool'] == 'diff_pat':
+# 				cl_str += 'DP'
+# 			val_df = pd.DataFrame({'CLMBR':cl_str, 'model':'linear','task':task, 'phase':'val', 'person_id':val_ids, 'pred_probs':val_preds, 'labels':val_labels})
+# 			val_df.to_csv(f'{result_save_path}/val_preds.csv',index=False)
 
-			# Run probe on test set
-			print('Testing probe...')
+# 			# Run probe on test set
+# 			print('Testing probe...')
 
-			test_preds, test_labels, test_ids = evaluate_probe(args, cl_probe_model, test_dataset)
-			test_df = pd.DataFrame({'CLMBR':cl_str, 'model':'linear', 'task':task, 'phase':'test', 'person_id':test_ids, 'pred_probs':test_preds, 'labels':test_labels})
-			test_df.to_csv(f'{result_save_path}/test_preds.csv',index=False)
+# 			test_preds, test_labels, test_ids = evaluate_probe(args, cl_probe_model, test_dataset)
+# 			test_df = pd.DataFrame({'CLMBR':cl_str, 'model':'linear', 'task':task, 'phase':'test', 'person_id':test_ids, 'pred_probs':test_preds, 'labels':test_labels})
+# 			test_df.to_csv(f'{result_save_path}/test_preds.csv',index=False)
 
-			# create pred prob df and bootstrap metrics
-			df_preds = pd.concat((val_df,test_df))
-			df_eval = calc_metrics(args, df_preds)
-			df_eval['CLMBR'] = cl_str
-			df_eval['task'] = task
-			print(df_eval)
-			df_eval.to_csv(f'{result_save_path}/eval.csv',index=False)
+# 			# create pred prob df and bootstrap metrics
+# 			df_preds = pd.concat((val_df,test_df))
+# 			df_eval = calc_metrics(args, df_preds)
+# 			df_eval['CLMBR'] = cl_str
+# 			df_eval['task'] = task
+# 			print(df_eval)
+# 			df_eval.to_csv(f'{result_save_path}/eval.csv',index=False)
 
 		
 # 		print('Training CL Representation probe with params: ', cl_rep_hp)
 			
 # 		# Path where CLMBR model is saved
-# 		cl_model_str = f'gru_sz_800_do_0.1_cd_0_dd_0_lr_0.01_l2_0.1_bs_2000_lr_5e-5_temp_0.01_pool_mean_rep'
+# 		cl_model_str = f'gru_sz_800_do_0.1_cd_0_dd_0_lr_0.01_l2_0.1_bs_1000_lr_3e-5_temp_0.01_pool_rand_day'
 # 		clmbr_model_path = f'{args.cl_rep_best_path}'
 # 		print(clmbr_model_path)
 
@@ -628,48 +658,48 @@ if __name__ == '__main__':
 # 		df_eval['task'] = task
 # 		df_eval.to_csv(f'{result_save_path}/eval.csv',index=False)
 		
-# 		print('Training OCP probe with params: ', ocp_hp)
+		print('Training OCP probe with params: ', ocp_hp)
 			
-# 		# Path where CLMBR model is saved
-# 		cl_model_str = f'gru_sz_800_do_0.2_l2_0.01_lr_5e-5_pool_ocp'
-# 		clmbr_model_path = f'{args.ocp_best_path}'
-# 		print(clmbr_model_path)
+		# Path where CLMBR model is saved
+		cl_model_str = f'gru_sz_800_do_0.1_l2_0.1_lr_5e-5_pool_ocp'
+		clmbr_model_path = f'{args.ocp_best_path}'
+		print(clmbr_model_path)
 
 
-# 		# Path where CLMBR probe will be saved
-# 		probe_save_path = f'{args.probe_path}/{task}/ocp/{cl_model_str}'
-# 		os.makedirs(f"{probe_save_path}",exist_ok=True)
+		# Path where CLMBR probe will be saved
+		probe_save_path = f'{args.probe_path}/{task}/ocp/{cl_model_str}'
+		os.makedirs(f"{probe_save_path}",exist_ok=True)
 			
-# 		result_save_path = f'{args.results_path}/{task}/probes/ocp/{cl_model_str}'
-# 		os.makedirs(f"{result_save_path}",exist_ok=True)
+		result_save_path = f'{args.results_path}/{task}/probes/ocp/{cl_model_str}'
+		os.makedirs(f"{result_save_path}",exist_ok=True)
 			
-# 		# Load CLMBR model and attach linear probe
-# 		clmbr_model = ehr_ml.clmbr.CLMBR.from_pretrained(clmbr_model_path, args.device).to(args.device)
-# 		clmbr_model.freeze()
+		# Load CLMBR model and attach linear probe
+		clmbr_model = ehr_ml.clmbr.CLMBR.from_pretrained(clmbr_model_path, args.device).to(args.device)
+		clmbr_model.freeze()
 
-# 		probe_model = LinearProbe(clmbr_model, bl_hp['size'], is_ocp=True)
+		probe_model = LinearProbe(clmbr_model, bl_hp['size'], is_ocp=True)
 
-# 		probe_model.to(args.device)
+		probe_model.to(args.device)
 
-# 		print('Training probe...')
-# 		# Train probe and evaluate on validation 
-# 		probe_model, val_preds, val_labels, val_ids = train_probe(args, probe_model, train_dataset, probe_save_path)
+		print('Training probe...')
+		# Train probe and evaluate on validation 
+		probe_model, val_preds, val_labels, val_ids = train_probe(args, probe_model, train_dataset, probe_save_path)
 
-# 		val_df = pd.DataFrame({'CLMBR':'OCP', 'model':'linear', 'task':task, 'phase':'val', 'person_id':val_ids, 'pred_probs':val_preds, 'labels':val_labels})
-# 		val_df.to_csv(f'{result_save_path}/val_preds.csv',index=False)
+		val_df = pd.DataFrame({'CLMBR':'OCP', 'model':'linear', 'task':task, 'phase':'val', 'person_id':val_ids, 'pred_probs':val_preds, 'labels':val_labels})
+		val_df.to_csv(f'{result_save_path}/val_preds.csv',index=False)
 
-# 		print('Testing probe...')
-# 		test_preds, test_labels, test_ids = evaluate_probe(args, probe_model, test_dataset)
+		print('Testing probe...')
+		test_preds, test_labels, test_ids = evaluate_probe(args, probe_model, test_dataset)
 
-# 		test_df = pd.DataFrame({'CLMBR':'OCP', 'model':'linear', 'task':task, 'phase':'test', 'person_id':test_ids, 'pred_probs':test_preds, 'labels':test_labels})
-# 		test_df.to_csv(f'{result_save_path}/test_preds.csv',index=False)
-# 		df_preds = pd.concat((val_df,test_df))
-# 		df_preds['CLMBR'] = df_preds['CLMBR'].astype(str)
-# 		df_preds['model'] = df_preds['model'].astype(str)
-# 		df_preds['task'] = df_preds['task'].astype(str)
-# 		df_preds['phase'] = df_preds['phase'].astype(str)
+		test_df = pd.DataFrame({'CLMBR':'OCP', 'model':'linear', 'task':task, 'phase':'test', 'person_id':test_ids, 'pred_probs':test_preds, 'labels':test_labels})
+		test_df.to_csv(f'{result_save_path}/test_preds.csv',index=False)
+		df_preds = pd.concat((val_df,test_df))
+		df_preds['CLMBR'] = df_preds['CLMBR'].astype(str)
+		df_preds['model'] = df_preds['model'].astype(str)
+		df_preds['task'] = df_preds['task'].astype(str)
+		df_preds['phase'] = df_preds['phase'].astype(str)
 
-# 		df_eval = calc_metrics(args, df_preds)
-# 		df_eval['CLMBR'] = 'OCP'
-# 		df_eval['task'] = task
-# 		df_eval.to_csv(f'{result_save_path}/eval.csv',index=False)
+		df_eval = calc_metrics(args, df_preds)
+		df_eval['CLMBR'] = 'OCP'
+		df_eval['task'] = task
+		df_eval.to_csv(f'{result_save_path}/eval.csv',index=False)
